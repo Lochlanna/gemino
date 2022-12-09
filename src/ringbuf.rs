@@ -1,6 +1,6 @@
 use std::cell::{SyncUnsafeCell, UnsafeCell};
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 pub(crate) trait RingBufferValue: Copy + Debug {}
 
@@ -10,7 +10,7 @@ pub(crate) struct RingBuffer<T: RingBufferValue> {
     //TODO Can we do this without option
     inner: SyncUnsafeCell<Vec<(T,usize)>>,
     write_head: AtomicUsize,
-    safe_head: AtomicUsize,
+    safe_head: AtomicI64,
     size: usize,
 }
 
@@ -28,7 +28,7 @@ where
         Self {
             inner: SyncUnsafeCell::new(inner),
             write_head: AtomicUsize::new(0),
-            safe_head: AtomicUsize::new(0),
+            safe_head: AtomicI64::new(-1),
             size: buffer_size,
         }
     }
@@ -41,10 +41,7 @@ where
         unsafe {
             (*ring)[index] = (val, id);
         }
-
-        if id > 0 {
-            self.safe_head.fetch_add(1, Ordering::Release);
-        }
+        self.safe_head.fetch_add(1, Ordering::Release);
     }
 
     pub fn try_get(&self, id: usize) -> Option<(T, usize)> {
@@ -52,13 +49,7 @@ where
         let index = id % self.size;
 
         let safe_head = self.safe_head.load(Ordering::Acquire);
-        if safe_head == 0 {
-            let write_head = self.write_head.load(Ordering::Acquire);
-            if write_head == 0 {
-                return None;
-            }
-        }
-        if id > safe_head {
+        if safe_head < 0 || id > safe_head as usize{
             return None;
         }
         unsafe { return Some((*ring)[index]);  }
@@ -68,37 +59,33 @@ where
         let ring = self.inner.get();
 
         let safe_head = self.safe_head.load(Ordering::Acquire);
-        if safe_head == 0 {
-            let write_head = self.write_head.load(Ordering::Acquire);
-            if write_head == 0 {
-                return None;
-            }
+        if safe_head < 0 {
+            return None
         }
-        unsafe { return Some((*ring)[safe_head]); }
+        unsafe { return Some((*ring)[safe_head as usize]); }
     }
 
-    // pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
-    //     let ring = self.inner.get();
-    //     let safe_head = self.safe_head.load(Ordering::Acquire);
-    //     if safe_head < id {
-    //         return 0;
-    //     }
-    //     let start_idx = id % self.size;
-    //     let end_idx = safe_head % self.size;
-    //     result.reserve(end_idx - start_idx);
-    //     for idx in start_idx..end_idx {
-    //         unsafe {
-    //             if let Some(value) = (*ring)[idx].as_ref() {
-    //                 result.push(value.clone());
-    //             }
-    //         }
-    //     }
-    //     end_idx - start_idx
-    // }
+    pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
+        let ring = self.inner.get();
+        let safe_head = self.safe_head.load(Ordering::Acquire);
+        if safe_head < 0 {
+            return 0;
+        }
+        let safe_head = safe_head as usize;
+        if safe_head < id {
+            return 0;
+        }
+        let start_idx = id % self.size;
+        let end_idx = safe_head % self.size;
+        unsafe {
+            result.extend_from_slice(&((*ring)[start_idx..end_idx+1]))
+        }
 
-    pub fn tail(&self) -> usize {
-        let head = self.safe_head.load(Ordering::Acquire);
-        return head + 1;
+        end_idx - start_idx
+    }
+
+    pub fn head(&self) -> i64 {
+        self.safe_head.load(Ordering::Acquire)
     }
 }
 
@@ -126,7 +113,7 @@ mod tests {
             loop {
                 if let Some((value, id)) = ring.try_get(current_id) {
                     if id != current_id {
-                        current_id = ring.tail() + 1;
+                        current_id = ring.head() as usize;
                         continue;
                     }
                     results.push(value);
@@ -172,13 +159,23 @@ mod tests {
 
     #[bench]
     fn one_reader_one_writer_bench(b: &mut Bencher) {
+        let spin_reader = |ring: &Arc<RingBuffer<i32>>, num_values: usize| {
+            let ring = ring.clone();
+            let jh = thread::spawn(move|| {
+                for id in 0..num_values {
+                    ring.try_get(id);
+                }
+            });
+            jh
+        };
+
         let values: Vec<i32> = (0..100000).collect();
         let num_values = values.len();
         b.iter(|| {
             let ring = Arc::new(RingBuffer::new(4096));
-            let reader_jh_a = reader(&ring, values.len());
-            let reader_jh_b = reader(&ring, values.len());
-            thread::sleep(Duration::from_secs_f64(0.05));
+            let reader_jh_a = spin_reader(&ring, values.len());
+            let reader_jh_b = spin_reader(&ring, values.len());
+            // thread::sleep(Duration::from_secs_f64(0.05));
             let writer_jh = writer(&ring, &values);
 
             writer_jh.join().expect("couldn't join writer!");
@@ -225,5 +222,20 @@ mod tests {
         ring.put(5);
         assert_eq!(ring.try_get(4), Some((5, 4)));
         assert_eq!(ring.try_get(5), None);
+    }
+
+    #[test]
+    fn bulk_read() {
+        let ring = RingBuffer::new(5);
+        ring.put(1);
+        ring.put(2);
+        ring.put(3);
+        ring.put(4);
+        ring.put(5);
+        let mut vals = Vec::new();
+        ring.read_batch_from(0, &mut vals);
+        let vals: Vec<i32> = vals.iter().map(|(v, i)|*v).collect();
+        println!("got {:?}", vals);
+        assert_eq!(vals, vec![1,2,3,4,5])
     }
 }
