@@ -84,7 +84,7 @@ where
 
         return if end_idx > start_idx {
             let num_elements = end_idx - start_idx + 1;
-            // result.reserve(num_elements);
+            result.reserve(num_elements);
             let res_start = result.len();
             unsafe {
                 result.set_len(res_start + num_elements);
@@ -95,7 +95,7 @@ where
             num_elements
         } else {
             let num_elements = end_idx + (self.size - start_idx) + 1;
-            // result.reserve(num_elements);
+            result.reserve(num_elements);
             let mut res_start = result.len();
             unsafe {
                 result.set_len(res_start + num_elements);
