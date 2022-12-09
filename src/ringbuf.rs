@@ -112,11 +112,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    extern crate test;
+
     use super::*;
     use std::sync::Arc;
     use std::thread;
     use std::thread::JoinHandle;
     use std::time::Duration;
+    use test::Bencher;
 
     #[derive(Clone, Debug)]
     struct Test {
@@ -173,6 +176,25 @@ mod tests {
 
         let reader_res = reader_jh_b.join().expect("couldn't join reader!");
         assert_eq!(reader_res, values);
+    }
+
+    #[bench]
+    fn one_reader_one_writer_bench(b: &mut Bencher) {
+        let values: Vec<i32> = (0..100000).collect();
+        let num_values = values.len();
+        b.iter(|| {
+            let ring = Arc::new(RingBuffer::new(4096));
+            let reader_jh_a = reader(&ring, values.len());
+            let reader_jh_b = reader(&ring, values.len());
+            thread::sleep(Duration::from_secs_f64(0.05));
+            let writer_jh = writer(&ring, &values);
+
+            writer_jh.join().expect("couldn't join writer!");
+
+            reader_jh_a.join().expect("couldn't join reader!");
+
+            reader_jh_b.join().expect("couldn't join reader!");
+        });
     }
 
     #[test]

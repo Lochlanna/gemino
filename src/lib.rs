@@ -1,4 +1,5 @@
 #![feature(sync_unsafe_cell)]
+#![feature(test)]
 
 mod ringbuf;
 
