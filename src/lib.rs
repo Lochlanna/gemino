@@ -1,4 +1,5 @@
 #![feature(sync_unsafe_cell)]
+#![feature(vec_into_raw_parts)]
 #![feature(test)]
 
 mod ringbuf;

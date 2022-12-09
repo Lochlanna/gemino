@@ -2,31 +2,13 @@ use std::cell::{SyncUnsafeCell, UnsafeCell};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub(crate) trait RingBufferValue: Clone + Copy + Debug {}
+pub(crate) trait RingBufferValue: Copy + Debug {}
 
-impl<T> RingBufferValue for T where T: Clone + Copy + Debug {}
-
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct Entry<T: RingBufferValue> {
-    value: T,
-    id: usize,
-}
-
-impl<T> Entry<T>
-where
-    T: RingBufferValue,
-{
-    pub fn new(value: T, id: usize) -> Self {
-        Self { value, id }
-    }
-    pub fn to_tuple(self) -> (T, usize) {
-        (self.value, self.id)
-    }
-}
+impl<T> RingBufferValue for T where T: Copy + Debug {}
 
 pub(crate) struct RingBuffer<T: RingBufferValue> {
     //TODO Can we do this without option
-    inner: SyncUnsafeCell<Vec<Option<(T, usize)>>>,
+    inner: SyncUnsafeCell<Vec<(T,usize)>>,
     write_head: AtomicUsize,
     safe_head: AtomicUsize,
     size: usize,
@@ -37,14 +19,18 @@ where
     T: RingBufferValue,
 {
     pub fn new(buffer_size: usize) -> Self {
-        let mut rb = Self {
-            inner: SyncUnsafeCell::new(Vec::with_capacity(buffer_size)),
+        let mut inner = Vec::with_capacity(buffer_size);
+        unsafe {
+            let (raw, _, allocated) = inner.into_raw_parts();
+            inner = Vec::from_raw_parts(raw, allocated, allocated);
+        }
+
+        Self {
+            inner: SyncUnsafeCell::new(inner),
             write_head: AtomicUsize::new(0),
             safe_head: AtomicUsize::new(0),
             size: buffer_size,
-        };
-        rb.inner.get_mut().resize_with(buffer_size, || None);
-        rb
+        }
     }
 
     pub fn put(&self, val: T) {
@@ -53,7 +39,7 @@ where
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.size;
         unsafe {
-            (*ring)[index] = Some((val, id));
+            (*ring)[index] = (val, id);
         }
 
         if id > 0 {
@@ -66,10 +52,16 @@ where
         let index = id % self.size;
 
         let safe_head = self.safe_head.load(Ordering::Acquire);
+        if safe_head == 0 {
+            let write_head = self.write_head.load(Ordering::Acquire);
+            if write_head == 0 {
+                return None;
+            }
+        }
         if id > safe_head {
             return None;
         }
-        unsafe { return (*ring)[index].clone();  }
+        unsafe { return Some((*ring)[index]);  }
     }
 
     pub fn try_read_head(&self) -> Option<(T, usize)> {
@@ -82,27 +74,27 @@ where
                 return None;
             }
         }
-        unsafe { return (*ring)[safe_head].clone(); }
+        unsafe { return Some((*ring)[safe_head]); }
     }
 
-    pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
-        let ring = self.inner.get();
-        let safe_head = self.safe_head.load(Ordering::Acquire);
-        if safe_head < id {
-            return 0;
-        }
-        let start_idx = id % self.size;
-        let end_idx = safe_head % self.size;
-        result.reserve(end_idx - start_idx);
-        for idx in start_idx..end_idx {
-            unsafe {
-                if let Some(value) = (*ring)[idx].as_ref() {
-                    result.push(value.clone());
-                }
-            }
-        }
-        end_idx - start_idx
-    }
+    // pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
+    //     let ring = self.inner.get();
+    //     let safe_head = self.safe_head.load(Ordering::Acquire);
+    //     if safe_head < id {
+    //         return 0;
+    //     }
+    //     let start_idx = id % self.size;
+    //     let end_idx = safe_head % self.size;
+    //     result.reserve(end_idx - start_idx);
+    //     for idx in start_idx..end_idx {
+    //         unsafe {
+    //             if let Some(value) = (*ring)[idx].as_ref() {
+    //                 result.push(value.clone());
+    //             }
+    //         }
+    //     }
+    //     end_idx - start_idx
+    // }
 
     pub fn tail(&self) -> usize {
         let head = self.safe_head.load(Ordering::Acquire);
