@@ -26,7 +26,7 @@ where
 
 pub(crate) struct RingBuffer<T: RingBufferValue> {
     //TODO Can we do this without option
-    inner: SyncUnsafeCell<Vec<Option<Entry<T>>>>,
+    inner: SyncUnsafeCell<Vec<Option<(T, usize)>>>,
     write_head: AtomicUsize,
     safe_head: AtomicUsize,
     size: usize,
@@ -53,7 +53,7 @@ where
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.size;
         unsafe {
-            (*ring)[index] = Some(Entry::new(val, id));
+            (*ring)[index] = Some((val, id));
         }
 
         if id > 0 {
@@ -64,25 +64,44 @@ where
     pub fn try_get(&self, id: usize) -> Option<(T, usize)> {
         let ring = self.inner.get();
         let index = id % self.size;
-        let entry: Option<Entry<T>>;
 
         let safe_head = self.safe_head.load(Ordering::Acquire);
         if id > safe_head {
             return None;
         }
-        unsafe { entry = (*ring)[index].clone() }
-        let entry = entry?;
-        Some(entry.to_tuple())
+        unsafe { return (*ring)[index].clone();  }
     }
 
     pub fn try_read_head(&self) -> Option<(T, usize)> {
         let ring = self.inner.get();
-        let entry: Option<Entry<T>>;
 
         let safe_head = self.safe_head.load(Ordering::Acquire);
-        unsafe { entry = (*ring)[safe_head].clone() }
-        let entry = entry?;
-        Some(entry.to_tuple())
+        if safe_head == 0 {
+            let write_head = self.write_head.load(Ordering::Acquire);
+            if write_head == 0 {
+                return None;
+            }
+        }
+        unsafe { return (*ring)[safe_head].clone(); }
+    }
+
+    pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
+        let ring = self.inner.get();
+        let safe_head = self.safe_head.load(Ordering::Acquire);
+        if safe_head < id {
+            return 0;
+        }
+        let start_idx = id % self.size;
+        let end_idx = safe_head % self.size;
+        result.reserve(end_idx - start_idx);
+        for idx in start_idx..end_idx {
+            unsafe {
+                if let Some(value) = (*ring)[idx].as_ref() {
+                    result.push(value.clone());
+                }
+            }
+        }
+        end_idx - start_idx
     }
 
     pub fn tail(&self) -> usize {
