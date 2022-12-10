@@ -14,7 +14,7 @@ fn reader(ring: &Arc<RingBuffer<i32>>, size_hint: usize) -> JoinHandle<Vec<i32>>
         loop {
             if let Some((value, id)) = ring.try_get(current_id) {
                 if id != current_id {
-                    current_id = ring.head() as usize;
+                    current_id = ring.read_head() as usize;
                     continue;
                 }
                 results.push(value);
@@ -41,7 +41,7 @@ fn writer(ring: &Arc<RingBuffer<i32>>, values: &Vec<i32>) -> JoinHandle<()> {
 
 #[test]
 fn two_reader_one_writer() {
-    let ring = Arc::new(RingBuffer::new(4096));
+    let ring = Arc::new(RingBuffer::new_raw(4096));
     let values: Vec<i32> = (0..100000).collect();
     let reader_jh_a = reader(&ring, values.len());
     let reader_jh_b = reader(&ring, values.len());
@@ -80,7 +80,7 @@ fn two_reader_one_writer_bench(b: &mut Bencher) {
     let values: Vec<i32> = (0..100000).collect();
     let num_values = values.len();
     b.iter(|| {
-        let ring = Arc::new(RingBuffer::new(4096));
+        let ring = Arc::new(RingBuffer::new_raw(4096));
         let reader_jh_a = bulk_reader(&ring, values.len());
         let reader_jh_b = bulk_reader(&ring, values.len());
         let writer_jh = writer(&ring, &values);
@@ -95,7 +95,7 @@ fn two_reader_one_writer_bench(b: &mut Bencher) {
 
 #[test]
 fn basic_set_get() {
-    let ring = RingBuffer::new(5);
+    let ring = RingBuffer::new_raw(5);
     assert_eq!(ring.try_get(0), None);
     ring.put(1);
     ring.put(2);
@@ -121,7 +121,7 @@ fn basic_set_get() {
 
 #[test]
 fn get_cannot_over_extend() {
-    let ring = RingBuffer::new(5);
+    let ring = RingBuffer::new_raw(5);
     ring.put(1);
     ring.put(2);
     ring.put(3);
@@ -133,7 +133,7 @@ fn get_cannot_over_extend() {
 
 #[test]
 fn bulk_read() {
-    let ring = RingBuffer::new(5);
+    let ring = RingBuffer::new_raw(5);
     ring.put(1);
     ring.put(2);
     ring.put(3);
@@ -148,7 +148,7 @@ fn bulk_read() {
 
 #[test]
 fn bulk_read_from_middle() {
-    let ring = RingBuffer::new(20);
+    let ring = RingBuffer::new_raw(20);
     ring.put(-2);
     ring.put(-1);
     ring.put(0);
@@ -171,7 +171,7 @@ fn bulk_read_from_middle() {
 
 #[test]
 fn bulk_read_wrap() {
-    let ring = RingBuffer::new(5);
+    let ring = RingBuffer::new_raw(5);
     ring.put(1);
     ring.put(2);
     ring.put(3);
@@ -189,7 +189,7 @@ fn bulk_read_wrap() {
 
 #[test]
 fn bulk_read_wrap_from_middle() {
-    let ring = RingBuffer::new(10);
+    let ring = RingBuffer::new_raw(10);
     ring.put(-3);
     ring.put(-2);
     ring.put(-1);
@@ -225,7 +225,7 @@ fn multi_writer() {
         jh
     };
 
-    let ring = Arc::new(RingBuffer::new(1024));
+    let ring = Arc::new(RingBuffer::new_raw(1024));
     let mut joiners = Vec::with_capacity(8);
     for _ in 0..joiners.capacity() {
         joiners.push(writer(ring.clone(), 10000));
