@@ -1,9 +1,18 @@
+#[allow(dead_code)]
+
 use std::sync::Arc;
 use crate::ringbuf::*;
 
-#[derive(Clone)]
 pub struct Producer<T: Produce> {
     inner: Arc<T>
+}
+
+impl<T> Clone for Producer<T> where T: Produce {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone()
+        }
+    }
 }
 
 impl<T> Produce for Producer<T> where T:Produce {
@@ -22,7 +31,7 @@ impl<T> From<Arc<RingBuffer<T>>> for Producer<RingBuffer<T>> where T: RingBuffer
     }
 }
 
-type RingBufferProducer<T> = Producer<RingBuffer<T>>;
+pub type RingBufferProducer<T> = Producer<RingBuffer<T>>;
 
 impl<T> RingBufferProducer<T> where T: RingBufferValue {
     pub fn get_raw_buffer(&self) -> Arc<RingBuffer<T>> {

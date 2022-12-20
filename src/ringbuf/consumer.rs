@@ -1,9 +1,18 @@
+#[allow(dead_code)]
+
 use std::sync::Arc;
 use crate::ringbuf::*;
 
-#[derive(Clone)]
 pub struct Consumer<T: Consume> {
     inner: Arc<T>
+}
+
+impl<T> Clone for Consumer<T> where T: Consume {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone()
+        }
+    }
 }
 
 impl<T> Consume for Consumer<T> where T: Consume {
@@ -30,7 +39,21 @@ impl<T> From<Arc<RingBuffer<T>>> for Consumer<RingBuffer<T>> where T: RingBuffer
     }
 }
 
-type RingBufferConsumer<T> = Consumer<RingBuffer<T>>;
+#[cfg(feature = "async")]
+impl<T> AsyncConsume for Consumer<T> where T: Consume + AsyncConsume {
+    type Value = <T as AsyncConsume>::Value;
+
+    async fn get(&self, id: usize) -> Option<(Self::Value, usize)> {
+        self.inner.get(id).await
+    }
+
+    async fn read_next(&self) -> (Self::Value, usize) {
+        self.inner.read_next().await
+    }
+}
+
+
+pub type RingBufferConsumer<T> = Consumer<RingBuffer<T>>;
 
 impl<T> RingBufferConsumer<T> where T: RingBufferValue {
     pub fn get_raw_buffer(&self) -> Arc<RingBuffer<T>> {

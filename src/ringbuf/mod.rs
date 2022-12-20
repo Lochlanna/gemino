@@ -1,19 +1,24 @@
+#[allow(dead_code)]
+
+#[cfg(test)]
+#[cfg(feature = "async")]
+mod async_tests;
+mod consumer;
+mod producer;
 #[cfg(test)]
 mod tests;
-mod producer;
-mod consumer;
 
+use crate::ringbuf::consumer::RingBufferConsumer;
+use crate::ringbuf::producer::RingBufferProducer;
 use std::cell::SyncUnsafeCell;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use crate::ringbuf::consumer::Consumer;
-use crate::ringbuf::producer::Producer;
+use std::sync::Arc;
 
 pub trait RingBufferValue: Copy {}
 
 impl<T> RingBufferValue for T where T: Copy {}
 
-pub trait Produce{
+pub trait Produce {
     type Value;
     fn put(&self, val: Self::Value);
 }
@@ -25,16 +30,25 @@ pub trait Consume {
     fn try_read_latest(&self) -> Option<(Self::Value, usize)>;
 }
 
+#[cfg(feature = "async")]
+pub trait AsyncConsume {
+    type Value;
+    async fn get(&self, id: usize) -> Option<(Self::Value, usize)>;
+    async fn read_next(&self) -> (Self::Value, usize);
+}
+
 pub trait RingInfo {
     fn read_head(&self) -> i64;
     fn capacity(&self) -> usize;
 }
 
-pub(crate) struct RingBuffer<T: RingBufferValue> {
+pub struct RingBuffer<T: RingBufferValue> {
     inner: SyncUnsafeCell<Vec<(T, usize)>>,
     write_head: AtomicUsize,
     read_head: AtomicI64,
     capacity: usize,
+    #[cfg(feature = "async")]
+    event: event_listener::Event,
 }
 
 impl<T> RingBuffer<T>
@@ -53,36 +67,30 @@ where
             write_head: AtomicUsize::new(0),
             read_head: AtomicI64::new(-1),
             capacity: buffer_size,
+            #[cfg(feature = "async")]
+            event: event_listener::Event::new(),
         }
     }
-    pub fn new(buffer_size: usize) -> (Producer<Self>, Consumer<Self>) {
-        let mut inner = Vec::with_capacity(buffer_size);
-        unsafe {
-            let (raw, _, allocated) = inner.into_raw_parts();
-            inner = Vec::from_raw_parts(raw, allocated, allocated);
-        }
-
-        let rb = Arc::new(Self {
-            inner: SyncUnsafeCell::new(inner),
-            write_head: AtomicUsize::new(0),
-            read_head: AtomicI64::new(-1),
-            capacity: buffer_size,
-        });
-        let producer = Producer::from(rb.clone());
-        let consumer = Consumer::from(rb.clone());
+    pub fn new(buffer_size: usize) -> (RingBufferProducer<T>, RingBufferConsumer<T>) {
+        let rb = Arc::new(Self::new_raw(buffer_size));
+        let producer = RingBufferProducer::from(rb.clone());
+        let consumer = RingBufferConsumer::from(rb.clone());
         (producer, consumer)
     }
 
-    pub fn consumer(self: &Arc<Self>) -> Consumer<Self>{
-        Consumer::from(self.clone())
+    pub fn consumer(self: &Arc<Self>) -> RingBufferConsumer<T> {
+        RingBufferConsumer::from(self.clone())
     }
 
-    pub fn producer(self: &Arc<Self>) -> Producer<Self>{
-        Producer::from(self.clone())
+    pub fn producer(self: &Arc<Self>) -> RingBufferProducer<T> {
+        RingBufferProducer::from(self.clone())
     }
 }
 
-impl<T> RingInfo for RingBuffer<T> where T: RingBufferValue {
+impl<T> RingInfo for RingBuffer<T>
+where
+    T: RingBufferValue,
+{
     fn read_head(&self) -> i64 {
         self.read_head.load(Ordering::Acquire)
     }
@@ -92,7 +100,10 @@ impl<T> RingInfo for RingBuffer<T> where T: RingBufferValue {
     }
 }
 
-impl<T> Produce for RingBuffer<T> where T: RingBufferValue {
+impl<T> Produce for RingBuffer<T>
+where
+    T: RingBufferValue,
+{
     type Value = T;
 
     fn put(&self, val: Self::Value) {
@@ -114,10 +125,15 @@ impl<T> Produce for RingBuffer<T> where T: RingBufferValue {
             )
             .is_err()
         {}
+        #[cfg(feature = "async")]
+        self.event.notify(usize::MAX)
     }
 }
 
-impl<T> Consume for RingBuffer<T> where T: RingBufferValue {
+impl<T> Consume for RingBuffer<T>
+where
+    T: RingBufferValue,
+{
     type Value = T;
 
     fn read_batch_from(&self, id: usize, result: &mut Vec<(Self::Value, usize)>) -> usize {
@@ -190,3 +206,28 @@ impl<T> Consume for RingBuffer<T> where T: RingBufferValue {
     }
 }
 
+#[cfg(feature = "async")]
+impl<T> AsyncConsume for RingBuffer<T>
+where
+    T: RingBufferValue,
+{
+    type Value = T;
+
+    async fn get(&self, id: usize) -> Option<(Self::Value, usize)> {
+        let immediate = self.try_get(id);
+        if immediate.is_some() {
+            //This value already exists so we're all good to go
+            return immediate;
+        }
+        // this is better than a spin...
+        while self.read_head.load(Ordering::Acquire) < id as i64 {
+            self.event.listen().await;
+        }
+        self.try_get(id)
+    }
+
+    async fn read_next(&self) -> (Self::Value, usize) {
+        self.event.listen().await;
+        return self.try_read_latest().unwrap();
+    }
+}

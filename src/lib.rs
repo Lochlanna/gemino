@@ -1,5 +1,6 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
+#![feature(async_fn_in_trait)]
 #![feature(test)]
 
 mod ringbuf;
