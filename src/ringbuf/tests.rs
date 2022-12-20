@@ -1,237 +1,109 @@
 extern crate test;
+
 use super::*;
-use std::sync::Arc;
+use chrono::Duration;
+use log::warn;
+use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
 use test::Bencher;
 
-fn reader(ring: &Arc<RingBuffer<i32>>, size_hint: usize) -> JoinHandle<Vec<i32>> {
-    let ring = ring.clone();
+fn read_sequential<T: RingBufferValue>(
+    consume: RingBufferConsumer<T>,
+    starting_at: usize,
+    until: usize,
+    or_time: Duration,
+) -> JoinHandle<Vec<T>> {
     let jh = thread::spawn(move || {
-        let mut results = Vec::with_capacity(size_hint);
-        let mut current_id: usize = 0;
-        loop {
-            if let Some((value, id)) = ring.try_get(current_id) {
-                if id != current_id {
-                    current_id = ring.read_head() as usize;
-                    continue;
+        let mut results = Vec::with_capacity(until - starting_at);
+        let mut next = starting_at;
+        let end_time= chrono::Utc::now() + chrono::Duration::from(or_time);
+        let mut timeout = or_time != Duration::zero();
+
+        while next <= until && (!timeout || chrono::Utc::now() < end_time){
+            if let Some((value, id)) = consume.try_get(next) {
+                if id > next + 1 {
+                    warn!("falling behind!")
                 }
                 results.push(value);
-                current_id += 1;
-            }
-            if current_id >= size_hint {
-                break;
+                next += 1;
             }
         }
         results
     });
     jh
 }
-fn writer(ring: &Arc<RingBuffer<i32>>, values: &Vec<i32>) -> JoinHandle<()> {
-    let ring = ring.clone();
-    let values = values.clone();
+
+fn write_all<T: RingBufferValue>(
+    produce: RingBufferProducer<T>,
+    from: &Vec<T>,
+    at_rate_of: i32,
+    per: Duration,
+) -> JoinHandle<()> {
+    let from = from.clone();
     let jh = thread::spawn(move || {
-        for value in values {
-            ring.put(value.clone());
+        let delay_micros = if at_rate_of == 0 || per == Duration::zero() {
+            Duration::zero()
+        } else {
+            per.div(at_rate_of)
+        };
+        for item in from {
+            produce.put(item);
+            thread::sleep(
+                delay_micros
+                    .to_std()
+                    .expect("couldn't get std::time from chrono time"),
+            )
         }
     });
     jh
 }
 
 #[test]
-fn two_reader_one_writer() {
-    let ring = Arc::new(RingBuffer::new_raw(4096));
-    let values: Vec<i32> = (0..100000).collect();
-    let reader_jh_a = reader(&ring, values.len());
-    let reader_jh_b = reader(&ring, values.len());
-    thread::sleep(Duration::from_secs_f64(0.05));
-    let writer_jh = writer(&ring, &values);
-
-    writer_jh.join().expect("couldn't join writer!");
-
-    let reader_res = reader_jh_a.join().expect("couldn't join reader!");
-    assert_eq!(reader_res, values);
-
-    let reader_res = reader_jh_b.join().expect("couldn't join reader!");
-    assert_eq!(reader_res, values);
-}
-
-#[bench]
-fn two_reader_one_writer_bench(b: &mut Bencher) {
-    let bulk_reader = |ring: &Arc<RingBuffer<i32>>, num_values: usize| {
-        let ring = ring.clone();
-        let jh = thread::spawn(move || {
-            let mut current_id = 0;
-            let mut buffer = Vec::with_capacity(num_values);
-            loop {
-                if ring.read_batch_from(current_id, &mut buffer) > 0 {
-                    let last = buffer.last().expect("");
-                    current_id = buffer.last().expect("couldn't get the last value").1 + 1;
-                }
-                if current_id >= num_values - 1 {
-                    return;
-                }
-            }
-        });
-        jh
-    };
-
-    let values: Vec<i32> = (0..100000).collect();
-    let num_values = values.len();
-    b.iter(|| {
-        let ring = Arc::new(RingBuffer::new_raw(4096));
-        let reader_jh_a = bulk_reader(&ring, values.len());
-        let reader_jh_b = bulk_reader(&ring, values.len());
-        let writer_jh = writer(&ring, &values);
-
-        writer_jh.join().expect("couldn't join writer!");
-
-        reader_jh_a.join().expect("couldn't join reader!");
-
-        reader_jh_b.join().expect("couldn't join reader!");
-    });
+fn sequential_read_write() {
+    let (producer, consumer) = RingBuffer::new(2).split();
+    producer.put(42);
+    producer.put(21);
+    assert_eq!(consumer.try_get(0).expect("no value"), (42, 0));
+    assert_eq!(consumer.try_get(1).expect("no value"), (21, 1));
+    assert_eq!(consumer.try_read_latest().expect("no value"), (21, 1));
+    producer.put(12);
+    assert_eq!(consumer.try_read_latest().expect("no value"), (12, 2));
+    assert_eq!(consumer.try_get(0).expect("no value"), (12, 2));
 }
 
 #[test]
-fn basic_set_get() {
-    let ring = RingBuffer::new_raw(5);
-    assert_eq!(ring.try_get(0), None);
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    assert_eq!(ring.try_get(0), Some((1, 0)));
-    assert_eq!(ring.try_get(1), Some((2, 1)));
-    assert_eq!(ring.try_get(2), Some((3, 2)));
-    assert_eq!(ring.try_get(3), Some((4, 3)));
-    assert_eq!(ring.try_get(4), Some((5, 4)));
-    assert_eq!(ring.try_get(5), None);
-    ring.put(6);
-    assert_eq!(ring.try_get(5), Some((6, 5)));
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    ring.put(42);
-    assert_eq!(ring.try_get(6), Some((42, 11)));
+fn simultaneous_read_write_no_overwrite() {
+    let test_input: Vec<u64> = (0..10).collect();
+    let (producer, consumer) = RingBuffer::new(20).split();
+    let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
+    let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
+    writer.join().expect("join of writer failed");
+    let result = reader.join().expect("join of reader failed");
+    assert_eq!(result, test_input);
 }
 
 #[test]
-fn get_cannot_over_extend() {
-    let ring = RingBuffer::new_raw(5);
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    assert_eq!(ring.try_get(4), Some((5, 4)));
-    assert_eq!(ring.try_get(5), None);
+fn simultaneous_read_write_with_overwrite() {
+    let test_input: Vec<u64> = (0..10).collect();
+    let (producer, consumer) = RingBuffer::new(3).split();
+    let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
+    let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
+    writer.join().expect("join of writer failed");
+    let result = reader.join().expect("join of reader failed");
+    assert_eq!(result, test_input);
 }
 
 #[test]
-fn bulk_read() {
-    let ring = RingBuffer::new_raw(5);
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    let mut vals = Vec::with_capacity(5);
-    ring.read_batch_from(0, &mut vals);
-    let vals: Vec<i32> = vals.iter().map(|(v, i)| *v).collect();
-    println!("got {:?}", vals);
-    assert_eq!(vals, vec![1, 2, 3, 4, 5])
-}
-
-#[test]
-fn bulk_read_from_middle() {
-    let ring = RingBuffer::new_raw(20);
-    ring.put(-2);
-    ring.put(-1);
-    ring.put(0);
-    let mut vals = Vec::with_capacity(5);
-    ring.read_batch_from(0, &mut vals);
-    let mut last_id = vals.last().expect("Couldn't get the last value").1;
-    assert_eq!(last_id, 2);
-    last_id += 1;
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    let mut vals = Vec::with_capacity(5);
-    ring.read_batch_from(last_id, &mut vals);
-    let vals: Vec<i32> = vals.iter().map(|(v, i)| *v).collect();
-    println!("got {:?}", vals);
-    assert_eq!(vals, vec![1, 2, 3, 4, 5])
-}
-
-#[test]
-fn bulk_read_wrap() {
-    let ring = RingBuffer::new_raw(5);
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    ring.put(6);
-    ring.put(7);
-    ring.put(8);
-    let mut vals = Vec::new();
-    ring.read_batch_from(3, &mut vals);
-    let vals: Vec<i32> = vals.iter().map(|(v, i)| *v).collect();
-    println!("got {:?}", vals);
-    assert_eq!(vals, vec![4, 5, 6, 7, 8])
-}
-
-#[test]
-fn bulk_read_wrap_from_middle() {
-    let ring = RingBuffer::new_raw(10);
-    ring.put(-3);
-    ring.put(-2);
-    ring.put(-1);
-    ring.put(0);
-    let mut vals = Vec::with_capacity(10);
-    ring.read_batch_from(0, &mut vals);
-    let mut last_id = vals.last().expect("Couldn't get the last value").1;
-    assert_eq!(last_id, 3);
-    last_id += 1;
-    ring.put(1);
-    ring.put(2);
-    ring.put(3);
-    ring.put(4);
-    ring.put(5);
-    ring.put(6);
-    ring.put(7);
-    ring.put(8);
-    let mut vals = Vec::with_capacity(10);
-    ring.read_batch_from(last_id, &mut vals);
-    let vals: Vec<i32> = vals.iter().map(|(v, i)| *v).collect();
-    println!("got {:?}", vals);
-    assert_eq!(vals, vec![1, 2, 3, 4, 5, 6, 7, 8])
-}
-
-#[test]
-fn multi_writer() {
-    let writer = |ring: Arc<RingBuffer<usize>>, write_to: usize| {
-        let jh = thread::spawn(move || {
-            for i in 0..write_to {
-                ring.put(i)
-            }
-        });
-        jh
-    };
-
-    let ring = Arc::new(RingBuffer::new_raw(1024));
-    let mut joiners = Vec::with_capacity(8);
-    for _ in 0..joiners.capacity() {
-        joiners.push(writer(ring.clone(), 10000));
-    }
-
-    for jh in joiners {
-        jh.join();
-    }
+fn simultaneous_read_write_multiple_reader() {
+    let test_input: Vec<u64> = (0..10).collect();
+    let (producer, consumer) = RingBuffer::new(20).split();
+    let reader_a = read_sequential(consumer.clone(), 0, test_input.len() - 1, Duration::zero());
+    let reader_b = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
+    let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
+    writer.join().expect("join of writer failed");
+    let result_a = reader_a.join().expect("join of reader failed");
+    let result_b = reader_b.join().expect("join of reader failed");
+    assert_eq!(result_a, test_input);
+    assert_eq!(result_b, test_input);
 }

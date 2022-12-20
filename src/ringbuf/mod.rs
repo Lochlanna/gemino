@@ -14,9 +14,9 @@ use std::cell::SyncUnsafeCell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-pub trait RingBufferValue: Copy {}
+pub trait RingBufferValue: Copy + Send + Sync + 'static {}
 
-impl<T> RingBufferValue for T where T: Copy {}
+impl<T> RingBufferValue for T where T: Copy + Send + Sync + 'static {}
 
 pub trait Produce {
     type Value;
@@ -55,7 +55,7 @@ impl<T> RingBuffer<T>
 where
     T: RingBufferValue,
 {
-    pub fn new_raw(buffer_size: usize) -> Self {
+    pub fn new(buffer_size: usize) -> Self {
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
             let (raw, _, allocated) = inner.into_raw_parts();
@@ -71,10 +71,16 @@ where
             event: event_listener::Event::new(),
         }
     }
-    pub fn new(buffer_size: usize) -> (RingBufferProducer<T>, RingBufferConsumer<T>) {
-        let rb = Arc::new(Self::new_raw(buffer_size));
+    pub fn split(self) -> (RingBufferProducer<T>, RingBufferConsumer<T>) {
+        let rb = Arc::new(self);
         let producer = RingBufferProducer::from(rb.clone());
         let consumer = RingBufferConsumer::from(rb.clone());
+        (producer, consumer)
+    }
+
+    pub fn split_arc(self: Arc<Self>) -> (RingBufferProducer<T>, RingBufferConsumer<T>) {
+        let producer = RingBufferProducer::from(self.clone());
+        let consumer = RingBufferConsumer::from(self.clone());
         (producer, consumer)
     }
 
@@ -201,7 +207,7 @@ where
             return None;
         }
         unsafe {
-            return Some((*ring)[safe_head as usize]);
+            return Some((*ring)[safe_head as usize % self.capacity]);
         }
     }
 }

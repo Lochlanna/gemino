@@ -7,6 +7,15 @@ pub struct Consumer<T: Consume> {
     inner: Arc<T>
 }
 
+impl<T> Consumer<T> where T: Consume {
+    // This isn't actually unsafe at all.
+    // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
+    // while still enabling explicit weirdness
+    pub unsafe fn to_inner(self) -> Arc<T> {
+        self.inner
+    }
+}
+
 impl<T> Clone for Consumer<T> where T: Consume {
     fn clone(&self) -> Self {
         Self {

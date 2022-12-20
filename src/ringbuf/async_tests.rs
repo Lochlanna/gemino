@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn basic_async() {
-    let (producer, consumer) = RingBuffer::new(5);
+    let (producer, consumer) = RingBuffer::new(5).split();
     spawn(move ||{
         sleep(Duration::from_secs_f64(0.1));
         producer.put(42);
@@ -18,7 +18,7 @@ async fn basic_async() {
 
 #[tokio::test]
 async fn wait_for_next() {
-    let (producer, consumer) = RingBuffer::new(5);
+    let (producer, consumer) = RingBuffer::new(5).split();
     let cloned_producer = producer.clone();
     spawn(move ||{
         sleep(Duration::from_secs_f64(0.1));
