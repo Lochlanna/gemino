@@ -14,3 +14,5 @@ async = ["event-listener"]
 tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
 log = "0.4"
+crossbeam-channel = "0.5"
+kanal = "0.1.0-pre7"

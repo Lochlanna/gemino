@@ -6,10 +6,9 @@ use log::warn;
 use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
-use test::Bencher;
 
-fn read_sequential<T: RingBufferValue>(
-    consume: RingBufferConsumer<T>,
+fn read_sequential<T: WormholeValue>(
+    consume: WormholeConsumer<T>,
     starting_at: usize,
     until: usize,
     or_time: Duration,
@@ -21,7 +20,7 @@ fn read_sequential<T: RingBufferValue>(
         let mut timeout = or_time != Duration::zero();
 
         while next <= until && (!timeout || chrono::Utc::now() < end_time){
-            if let Some((value, id)) = consume.try_get(next) {
+            if let Some((value, id)) = consume.recv_cell(next) {
                 if id > next + 1 {
                     warn!("falling behind!")
                 }
@@ -34,8 +33,8 @@ fn read_sequential<T: RingBufferValue>(
     jh
 }
 
-fn write_all<T: RingBufferValue>(
-    produce: RingBufferProducer<T>,
+fn write_all<T: WormholeValue>(
+    produce: WormholeProducer<T>,
     from: &Vec<T>,
     at_rate_of: i32,
     per: Duration,
@@ -48,7 +47,7 @@ fn write_all<T: RingBufferValue>(
             per.div(at_rate_of)
         };
         for item in from {
-            produce.put(item);
+            produce.send(item);
             thread::sleep(
                 delay_micros
                     .to_std()
@@ -61,21 +60,21 @@ fn write_all<T: RingBufferValue>(
 
 #[test]
 fn sequential_read_write() {
-    let (producer, consumer) = RingBuffer::new(2).split();
-    producer.put(42);
-    producer.put(21);
-    assert_eq!(consumer.try_get(0).expect("no value"), (42, 0));
-    assert_eq!(consumer.try_get(1).expect("no value"), (21, 1));
-    assert_eq!(consumer.try_read_latest().expect("no value"), (21, 1));
-    producer.put(12);
-    assert_eq!(consumer.try_read_latest().expect("no value"), (12, 2));
-    assert_eq!(consumer.try_get(0).expect("no value"), (12, 2));
+    let (producer, consumer) = Wormhole::new(2).split();
+    producer.send(42);
+    producer.send(21);
+    assert_eq!(consumer.recv_cell(0).expect("no value"), (42, 0));
+    assert_eq!(consumer.recv_cell(1).expect("no value"), (21, 1));
+    assert_eq!(consumer.next().expect("no value"), (21, 1));
+    producer.send(12);
+    assert_eq!(consumer.next().expect("no value"), (12, 2));
+    assert_eq!(consumer.recv_cell(0).expect("no value"), (12, 2));
 }
 
 #[test]
 fn simultaneous_read_write_no_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = RingBuffer::new(20).split();
+    let (producer, consumer) = Wormhole::new(20).split();
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -86,7 +85,7 @@ fn simultaneous_read_write_no_overwrite() {
 #[test]
 fn simultaneous_read_write_with_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = RingBuffer::new(3).split();
+    let (producer, consumer) = Wormhole::new(3).split();
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -97,7 +96,7 @@ fn simultaneous_read_write_with_overwrite() {
 #[test]
 fn simultaneous_read_write_multiple_reader() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = RingBuffer::new(20).split();
+    let (producer, consumer) = Wormhole::new(20).split();
     let reader_a = read_sequential(consumer.clone(), 0, test_input.len() - 1, Duration::zero());
     let reader_b = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
@@ -107,3 +106,15 @@ fn simultaneous_read_write_multiple_reader() {
     assert_eq!(result_a, test_input);
     assert_eq!(result_b, test_input);
 }
+
+#[test]
+fn seq_read_write_many() {
+    let (producer, consumer) = Wormhole::new(100).split();
+    for i in 0..1000 {
+        producer.send(i);
+        let (v, id) = consumer.recv_cell(i).expect("couldn't get value");
+        assert_eq!(v, i);
+        assert_eq!(id, i);
+    }
+}
+

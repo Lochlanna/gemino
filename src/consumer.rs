@@ -1,7 +1,7 @@
 #[allow(dead_code)]
 
 use std::sync::Arc;
-use crate::ringbuf::*;
+use crate::*;
 
 pub struct Consumer<T: Consume> {
     inner: Arc<T>
@@ -31,17 +31,17 @@ impl<T> Consume for Consumer<T> where T: Consume {
         self.inner.read_batch_from(id,result)
     }
 
-    fn try_get(&self, id: usize) -> Option<(Self::Value, usize)> {
-        self.inner.try_get(id)
+    fn recv_cell(&self, id: usize) -> Option<(Self::Value, usize)> {
+        self.inner.recv_cell(id)
     }
 
-    fn try_read_latest(&self) -> Option<(Self::Value, usize)> {
-        self.inner.try_read_latest()
+    fn next(&self) -> Option<(Self::Value, usize)> {
+        self.inner.next()
     }
 }
 
-impl<T> From<Arc<RingBuffer<T>>> for Consumer<RingBuffer<T>> where T: RingBufferValue {
-    fn from(ring_buffer: Arc<RingBuffer<T>>) -> Self {
+impl<T> From<Arc<Wormhole<T>>> for Consumer<Wormhole<T>> where T: WormholeValue {
+    fn from(ring_buffer: Arc<Wormhole<T>>) -> Self {
         Self {
             inner: ring_buffer
         }
@@ -62,10 +62,10 @@ impl<T> AsyncConsume for Consumer<T> where T: Consume + AsyncConsume {
 }
 
 
-pub type RingBufferConsumer<T> = Consumer<RingBuffer<T>>;
+pub type WormholeConsumer<T> = Consumer<Wormhole<T>>;
 
-impl<T> RingBufferConsumer<T> where T: RingBufferValue {
-    pub fn get_raw_buffer(&self) -> Arc<RingBuffer<T>> {
+impl<T> WormholeConsumer<T> where T: WormholeValue {
+    pub fn get_raw_buffer(&self) -> Arc<Wormhole<T>> {
         self.inner.clone()
     }
 }
