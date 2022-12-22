@@ -1,14 +1,17 @@
 extern crate test;
 
+use std::fmt::Debug;
 use super::*;
 use chrono::Duration;
 use log::warn;
 use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
+use crate::consumer::{Receiver, ReceiverError};
+use crate::producer::Sender;
 
 fn read_sequential<T: WormholeValue>(
-    consume: WormholeConsumer<T>,
+    mut consume: impl Receiver<Error=ReceiverError<T>, Item=T> + Send + 'static,
     starting_at: usize,
     until: usize,
     or_time: Duration,
@@ -20,13 +23,20 @@ fn read_sequential<T: WormholeValue>(
         let mut timeout = or_time != Duration::zero();
 
         while next <= until && (!timeout || chrono::Utc::now() < end_time){
-            if let Some((value, id)) = consume.recv_cell(next) {
-                if id > next + 1 {
-                    warn!("falling behind!")
+            match consume.recv() {
+                Ok(value) => results.push(value),
+                Err(err) => {
+                    match err {
+                        ReceiverError::RunningBehind(value, skip) => {
+                            warn!("falling behind!");
+                            results.push(value);
+                            next += skip;
+                        }
+                        _ => {}
+                    }
                 }
-                results.push(value);
-                next += 1;
             }
+            next += 1;
         }
         results
     });
@@ -34,7 +44,7 @@ fn read_sequential<T: WormholeValue>(
 }
 
 fn write_all<T: WormholeValue>(
-    produce: WormholeProducer<T>,
+    produce: impl Sender<Item=T> + Send + 'static,
     from: &Vec<T>,
     at_rate_of: i32,
     per: Duration,
@@ -60,15 +70,15 @@ fn write_all<T: WormholeValue>(
 
 #[test]
 fn sequential_read_write() {
-    let (producer, consumer) = Wormhole::new(2).split();
-    producer.send(42);
-    producer.send(21);
-    assert_eq!(consumer.recv_cell(0).expect("no value"), (42, 0));
-    assert_eq!(consumer.recv_cell(1).expect("no value"), (21, 1));
-    assert_eq!(consumer.next().expect("no value"), (21, 1));
-    producer.send(12);
-    assert_eq!(consumer.next().expect("no value"), (12, 2));
-    assert_eq!(consumer.recv_cell(0).expect("no value"), (12, 2));
+    let wormhole = Wormhole::new(2);
+    wormhole.send(42);
+    wormhole.send(21);
+    assert_eq!(wormhole.try_get(0).expect("no value"), (42, 0));
+    assert_eq!(wormhole.try_get(1).expect("no value"), (21, 1));
+    assert_eq!(wormhole.get_latest().expect("no value"), (21, 1));
+    wormhole.send(12);
+    assert_eq!(wormhole.get_latest().expect("no value"), (12, 2));
+    assert_eq!(wormhole.try_get(0).expect("no value"), (12, 2));
 }
 
 #[test]
@@ -109,10 +119,10 @@ fn simultaneous_read_write_multiple_reader() {
 
 #[test]
 fn seq_read_write_many() {
-    let (producer, consumer) = Wormhole::new(100).split();
+    let wormhole = Wormhole::new(100);
     for i in 0..1000 {
-        producer.send(i);
-        let (v, id) = consumer.recv_cell(i).expect("couldn't get value");
+        wormhole.send(i);
+        let (v, id) = wormhole.try_get(i).expect("couldn't get value");
         assert_eq!(v, i);
         assert_eq!(id, i);
     }

@@ -3,20 +3,33 @@
 use std::sync::Arc;
 use crate::*;
 
-pub struct Producer<T: Produce> {
-    inner: Arc<T>
+pub trait Sender {
+    type Item;
+    fn send(&self, val: Self::Item);
 }
 
-impl<T> Producer<T> where T: Produce {
+pub struct WormholeSender<T> {
+    inner: Arc<Wormhole<T>>
+}
+
+impl<T> WormholeSender<T> {
     // This isn't actually unsafe at all.
     // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
     // while still enabling explicit weirdness
-    pub unsafe fn to_inner(self) -> Arc<T> {
+    pub unsafe fn to_inner(self) -> Arc<Wormhole<T>> {
         self.inner
     }
 }
 
-impl<T> Clone for Producer<T> where T: Produce {
+impl<T> Sender for WormholeSender<T> where T: WormholeValue{
+    type Item = T;
+
+    fn send(&self, val: Self::Item) {
+        self.inner.send(val);
+    }
+}
+
+impl<T> Clone for WormholeSender<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone()
@@ -24,26 +37,10 @@ impl<T> Clone for Producer<T> where T: Produce {
     }
 }
 
-impl<T> Produce for Producer<T> where T:Produce {
-    type Value = T::Value;
-
-    fn send(&self, val: Self::Value) {
-        self.inner.send(val);
-    }
-}
-
-impl<T> From<Arc<Wormhole<T>>> for Producer<Wormhole<T>> where T: WormholeValue {
+impl<T> From<Arc<Wormhole<T>>> for WormholeSender<T> {
     fn from(ring_buffer: Arc<Wormhole<T>>) -> Self {
         Self {
             inner: ring_buffer
         }
-    }
-}
-
-pub type WormholeProducer<T> = Producer<Wormhole<T>>;
-
-impl<T> WormholeProducer<T> where T: WormholeValue {
-    pub fn get_raw_buffer(&self) -> Arc<Wormhole<T>> {
-        self.inner.clone()
     }
 }

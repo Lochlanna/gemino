@@ -4,10 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-event-listener = {version = "2.5", optional = true }
+event-listener = {version = "2.5"}
 
 [features]
-async = ["event-listener"]
 
 
 [dev-dependencies]

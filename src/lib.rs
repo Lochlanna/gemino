@@ -1,12 +1,10 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
-#![feature(async_fn_in_trait)]
 #![feature(test)]
 
 #[allow(dead_code)]
 
 #[cfg(test)]
-#[cfg(feature = "async")]
 mod async_tests;
 mod consumer;
 mod producer;
@@ -15,10 +13,10 @@ mod tests;
 #[cfg(test)]
 mod seq_benchmarks;
 #[cfg(test)]
-mod simultanious_benchmarks;
+mod parallel_benchmarks;
 
-use consumer::WormholeConsumer;
-use producer::WormholeProducer;
+use consumer::WormholeReceiver;
+use producer::WormholeSender;
 use std::cell::SyncUnsafeCell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -27,85 +25,45 @@ pub trait WormholeValue: Copy + Send + Sync + 'static {}
 
 impl<T> WormholeValue for T where T: Copy + Send + Sync + 'static {}
 
-pub trait Produce {
-    type Value;
-    fn send(&self, val: Self::Value);
-}
-
-pub trait Consume {
-    type Value;
-    fn read_batch_from(&self, id: usize, result: &mut Vec<(Self::Value, usize)>) -> usize;
-    fn recv_cell(&self, id: usize) -> Option<(Self::Value, usize)>;
-    fn next(&self) -> Option<(Self::Value, usize)>;
-}
-
-#[cfg(feature = "async")]
-pub trait AsyncConsume {
-    type Value;
-    async fn get(&self, id: usize) -> Option<(Self::Value, usize)>;
-    async fn read_next(&self) -> (Self::Value, usize);
-}
-
-pub trait Info {
-    fn read_head(&self) -> i64;
-    fn capacity(&self) -> usize;
-}
-
-pub struct Wormhole<T: WormholeValue> {
+pub struct Wormhole<T> {
     inner: SyncUnsafeCell<Vec<(T, usize)>>,
     write_head: AtomicUsize,
     read_head: AtomicI64,
     capacity: usize,
-    #[cfg(feature = "async")]
     event: event_listener::Event,
 }
 
 impl<T> Wormhole<T>
-    where
-        T: WormholeValue,
 {
-    pub fn new(buffer_size: usize) -> Self {
+    pub fn new(buffer_size: usize) -> Arc<Self> {
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
             let (raw, _, allocated) = inner.into_raw_parts();
             inner = Vec::from_raw_parts(raw, allocated, allocated);
         }
 
-        Self {
+        Arc::new(Self {
             inner: SyncUnsafeCell::new(inner),
             write_head: AtomicUsize::new(0),
             read_head: AtomicI64::new(-1),
             capacity: buffer_size,
-            #[cfg(feature = "async")]
             event: event_listener::Event::new(),
-        }
+        })
     }
-    pub fn split(self) -> (WormholeProducer<T>, WormholeConsumer<T>) {
-        let rb = Arc::new(self);
-        let producer = WormholeProducer::from(rb.clone());
-        let consumer = WormholeConsumer::from(rb.clone());
+    pub fn split(self: &Arc<Self>) -> (WormholeSender<T>, WormholeReceiver<T>) {
+        let producer = WormholeSender::from(self.clone());
+        let consumer = WormholeReceiver::from(self.clone());
         (producer, consumer)
     }
 
-    pub fn split_arc(self: Arc<Self>) -> (WormholeProducer<T>, WormholeConsumer<T>) {
-        let producer = WormholeProducer::from(self.clone());
-        let consumer = WormholeConsumer::from(self.clone());
-        (producer, consumer)
+    pub fn consumer(self: &Arc<Self>) -> WormholeReceiver<T> {
+        WormholeReceiver::from(self.clone())
     }
 
-    pub fn consumer(self: &Arc<Self>) -> WormholeConsumer<T> {
-        WormholeConsumer::from(self.clone())
+    pub fn producer(self: &Arc<Self>) -> WormholeSender<T> {
+        WormholeSender::from(self.clone())
     }
 
-    pub fn producer(self: &Arc<Self>) -> WormholeProducer<T> {
-        WormholeProducer::from(self.clone())
-    }
-}
-
-impl<T> Info for Wormhole<T>
-    where
-        T: WormholeValue,
-{
     fn read_head(&self) -> i64 {
         self.read_head.load(Ordering::Acquire)
     }
@@ -115,13 +73,9 @@ impl<T> Info for Wormhole<T>
     }
 }
 
-impl<T> Produce for Wormhole<T>
-    where
-        T: WormholeValue,
+impl<T> Wormhole<T> where T: WormholeValue,
 {
-    type Value = T;
-
-    fn send(&self, val: Self::Value) {
+    pub fn send(&self, val: T) {
         let ring = self.inner.get();
 
         let id = self.write_head.fetch_add(1, Ordering::Release);
@@ -140,18 +94,10 @@ impl<T> Produce for Wormhole<T>
             )
             .is_err()
         {}
-        #[cfg(feature = "async")]
         self.event.notify(usize::MAX)
     }
-}
 
-impl<T> Consume for Wormhole<T>
-    where
-        T: WormholeValue,
-{
-    type Value = T;
-
-    fn read_batch_from(&self, id: usize, result: &mut Vec<(Self::Value, usize)>) -> usize {
+    pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
         let ring = self.inner.get();
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 {
@@ -195,7 +141,7 @@ impl<T> Consume for Wormhole<T>
         };
     }
 
-    fn recv_cell(&self, id: usize) -> Option<(Self::Value, usize)> {
+    pub fn try_get(&self, id: usize) -> Option<(T, usize)> {
         let ring = self.inner.get();
         let index = id % self.capacity;
 
@@ -208,7 +154,7 @@ impl<T> Consume for Wormhole<T>
         }
     }
 
-    fn next(&self) -> Option<(Self::Value, usize)> {
+    pub fn get_latest(&self) -> Option<(T, usize)> {
         let ring = self.inner.get();
 
         let safe_head = self.read_head.load(Ordering::Acquire);
@@ -219,30 +165,52 @@ impl<T> Consume for Wormhole<T>
             return Some((*ring)[safe_head as usize % self.capacity]);
         }
     }
-}
 
-#[cfg(feature = "async")]
-impl<T> AsyncConsume for Wormhole<T>
-    where
-        T: WormholeValue,
-{
-    type Value = T;
+    pub fn get_blocking(&self, id: usize) -> (T, usize) {
+        let immediate = self.try_get(id);
+        if immediate.is_some() {
+            //This value already exists so we're all good to go
+            return immediate.unwrap();
+        }
+        // this is better than a spin...
+        while self.read_head.load(Ordering::Acquire) < id as i64 {
+            self.event.listen().wait()
+        }
+        self.try_get(id).unwrap()
+    }
 
-    async fn get(&self, id: usize) -> Option<(Self::Value, usize)> {
-        let immediate = self.recv_cell(id);
+    pub fn get_blocking_before(&self, id: usize, before: std::time::Instant) -> Option<(T, usize)> {
+        let immediate = self.try_get(id);
         if immediate.is_some() {
             //This value already exists so we're all good to go
             return immediate;
         }
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
-            self.event.listen().await;
+            if before.le(&std::time::Instant::now()) {
+                return None
+            }
+            self.event.listen().wait_deadline(before);
         }
-        self.recv_cell(id)
+        self.try_get(id)
     }
 
-    async fn read_next(&self) -> (Self::Value, usize) {
+    pub async fn get(&self, id: usize) -> (T, usize) {
+        let immediate = self.try_get(id);
+        if immediate.is_some() {
+            //This value already exists so we're all good to go
+            return immediate.unwrap();
+        }
+        // this is better than a spin...
+        while self.read_head.load(Ordering::Acquire) < id as i64 {
+            self.event.listen().await;
+        }
+        self.try_get(id).unwrap()
+    }
+
+    pub async fn read_next(&self) -> (T, usize) {
         self.event.listen().await;
-        return self.next().unwrap();
+        return self.get_latest().unwrap();
     }
 }
+

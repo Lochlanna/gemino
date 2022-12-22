@@ -7,10 +7,12 @@ use kanal::bounded as kanal_bounded;
 use chrono::Duration;
 use std::thread::{JoinHandle};
 use std::thread;
+use crate::consumer::Receiver;
+use crate::producer::Sender;
 
 trait BenchReceiver {
     type Item: WormholeValue;
-    fn bench_recv(&self) -> Self::Item;
+    fn bench_recv(&mut self) -> Self::Item;
 }
 
 trait BenchSender {
@@ -18,19 +20,15 @@ trait BenchSender {
     fn bench_send(&self, v: Self::Item);
 }
 
-impl<T> BenchReceiver for WormholeConsumer<T> where T: WormholeValue{
+impl<T> BenchReceiver for WormholeReceiver<T> where T: WormholeValue{
     type Item = T;
 
-    fn bench_recv(&self) -> Self::Item {
-        let mut v = self.next();
-        while v.is_none() {
-            v = self.next();
-        }
-        v.unwrap().0
+    fn bench_recv(&mut self) -> Self::Item {
+        self.recv().expect("couldn't get value from wormhole")
     }
 }
 
-impl<T> BenchSender for WormholeProducer<T> where T: WormholeValue {
+impl<T> BenchSender for WormholeSender<T> where T: WormholeValue {
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -41,7 +39,7 @@ impl<T> BenchSender for WormholeProducer<T> where T: WormholeValue {
 impl<T> BenchReceiver for kanal::Receiver<T> where T: WormholeValue {
     type Item = T;
 
-    fn bench_recv(&self) -> Self::Item {
+    fn bench_recv(&mut self) -> Self::Item {
         self.recv().expect("couldn't get value from kanal")
     }
 }
@@ -58,7 +56,7 @@ impl<T> BenchSender for kanal::Sender<T> where T: WormholeValue {
 impl<T> BenchReceiver for std::sync::mpsc::Receiver<T> where T: WormholeValue {
     type Item = T;
 
-    fn bench_recv(&self) -> Self::Item {
+    fn bench_recv(&mut self) -> Self::Item {
         self.recv().expect("couldn't get value from kanal")
     }
 }
@@ -74,7 +72,7 @@ impl<T> BenchSender for std::sync::mpsc::Sender<T> where T: WormholeValue {
 impl<T> BenchReceiver for crossbeam_channel::Receiver<T> where T: WormholeValue {
     type Item = T;
 
-    fn bench_recv(&self) -> Self::Item {
+    fn bench_recv(&mut self) -> Self::Item {
         self.recv().expect("couldn't get value from kanal")
     }
 }
@@ -89,7 +87,7 @@ impl<T> BenchSender for crossbeam_channel::Sender<T> where T: WormholeValue {
 
 
 fn read_sequential<R: BenchReceiver + 'static + Send>(
-    consume: R,
+    mut consume: R,
     until: usize,
 ) -> JoinHandle<Vec<R::Item>> {
     let jh = thread::spawn(move || {
@@ -126,7 +124,7 @@ fn simultanious_wormhole(b: &mut Bencher) {
     // method of Bencher
     let test_input: Vec<u32> = (0..1000).collect();
     b.iter(|| {
-        let (producer, consumer) = Wormhole::new(100).split();
+        let (producer, mut consumer) = Wormhole::new(1024).split();
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
         writer.join().expect("coudln't join writer");
