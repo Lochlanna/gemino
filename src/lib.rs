@@ -14,6 +14,8 @@ mod tests;
 mod seq_benchmarks;
 #[cfg(test)]
 mod parallel_benchmarks;
+#[cfg(test)]
+mod async_benchmarks;
 
 use consumer::WormholeReceiver;
 use producer::WormholeSender;
@@ -66,6 +68,14 @@ impl<T> Wormhole<T>
 
     fn read_head(&self) -> i64 {
         self.read_head.load(Ordering::Acquire)
+    }
+
+    fn oldest(&self) -> usize {
+        let head = self.write_head.load(Ordering::Acquire);
+        if head < self.capacity {
+            return 0;
+        }
+        return (head + self.capacity + 1) % self.capacity;
     }
 
     fn capacity(&self) -> usize {

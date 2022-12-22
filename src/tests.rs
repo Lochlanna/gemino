@@ -11,7 +11,7 @@ use crate::consumer::{Receiver, ReceiverError};
 use crate::producer::Sender;
 
 fn read_sequential<T: WormholeValue>(
-    mut consume: impl Receiver<Error=ReceiverError<T>, Item=T> + Send + 'static,
+    mut consume: impl Receiver<Error=ReceiverError, Item=T> + Send + 'static,
     starting_at: usize,
     until: usize,
     or_time: Duration,
@@ -27,9 +27,8 @@ fn read_sequential<T: WormholeValue>(
                 Ok(value) => results.push(value),
                 Err(err) => {
                     match err {
-                        ReceiverError::RunningBehind(value, skip) => {
+                        ReceiverError::Lagged(skip) => {
                             warn!("falling behind!");
-                            results.push(value);
                             next += skip;
                         }
                         _ => {}

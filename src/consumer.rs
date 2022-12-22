@@ -14,15 +14,24 @@ pub struct WormholeReceiver<T> {
     next_id: usize,
 }
 
-pub enum ReceiverError<T> {
-    RunningBehind(T, usize),
+pub enum ReceiverError {
+    Lagged(usize),
     NoNewData,
 }
 
-impl<T> Debug for ReceiverError<T> {
+impl ReceiverError {
+    pub fn lagged(&self)->usize {
+        if let ReceiverError::Lagged(missed) = self {
+            return *missed;
+        }
+        0
+    }
+}
+
+impl Debug for ReceiverError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return match self {
-            ReceiverError::RunningBehind(_, _) => f.write_str("receiver is running behind and has missed out on messages"),
+            ReceiverError::Lagged(_) => f.write_str("receiver is running behind and has missed out on messages"),
             ReceiverError::NoNewData => f.write_str("no new data in channel"),
         }
     }
@@ -39,14 +48,15 @@ impl<T> WormholeReceiver<T> {
 
 impl<T> Receiver for WormholeReceiver<T> where T:WormholeValue {
     type Item = T;
-    type Error = ReceiverError<T>;
+    type Error = ReceiverError;
 
     fn recv(&mut self) -> Result<Self::Item, Self::Error> {
         let (value, id) = self.inner.get_blocking(self.next_id);
         if id != self.next_id {
+            //lagged
+            self.next_id = self.inner.oldest();
             let missed = id - self.next_id;
-            self.next_id = id + 1;
-            return Err(ReceiverError::RunningBehind(value, missed));
+            return Err(ReceiverError::Lagged(missed));
         }
         self.next_id = self.next_id + 1;
         Ok(value)
@@ -57,47 +67,55 @@ impl<T> WormholeReceiver<T>
 where
     T: WormholeValue,
 {
-    pub async fn async_recv(&mut self) -> Result<T, ReceiverError<T>> {
+    pub async fn async_recv(&mut self) -> Result<T, ReceiverError> {
         let (value, id) = self.inner.get(self.next_id).await;
         if id != self.next_id {
+            //lagged
+            self.next_id = self.inner.oldest();
             let missed = id - self.next_id;
-            self.next_id = id + 1;
-            return Err(ReceiverError::RunningBehind(value, missed));
+            return Err(ReceiverError::Lagged(missed));
         }
         self.next_id = self.next_id + 1;
         Ok(value)
     }
-    pub fn recv_many(&mut self) -> Result<Vec<T>, ReceiverError<Vec<T>>> {
+    //TODO how do we deal with missed values in this call?
+    pub fn recv_many(&mut self) -> Vec<T> {
         let mut result = Vec::new();
         self.inner.read_batch_from(self.next_id, &mut result);
-        let mut is_err = false;
-        let mut missed = 0;
-        if let Some(value) = result.first() {
-            if value.1 > self.next_id {
-                missed = value.1 - self.next_id;
-                is_err = true;
-            }
-        }
         if let Some(value) = result.last() {
             self.next_id = value.1 + 1;
         }
-        let result: Vec<T> = result.into_iter().map(|(value, _)| value).collect();
-        if is_err {
-            return Err(ReceiverError::RunningBehind(result, missed));
-        }
-        Ok(result)
+        result.into_iter().map(|(value, _)| value).collect()
     }
 
-    pub fn try_recv(&mut self) -> Result<T, ReceiverError<T>> {
+    pub fn try_recv(&mut self) -> Result<T, ReceiverError> {
         let (value, id) = self.inner.try_get(self.next_id).ok_or(ReceiverError::NoNewData)?;
-        if id < self.next_id {
-            return Err(ReceiverError::NoNewData);
-        } else if id > self.next_id {
+        if id > self.next_id {
+            //lagged
+            self.next_id = self.inner.oldest();
             let missed = id - self.next_id;
-            self.next_id = id + 1;
-            return Err(ReceiverError::RunningBehind(value, missed))
+            return Err(ReceiverError::Lagged(missed));
         }
         self.next_id += 1;
+        Ok(value)
+    }
+
+    pub fn latest(&mut self) -> Result<T, ReceiverError> {
+        let (value, id) = self.inner.get_latest().ok_or(ReceiverError::NoNewData)?;
+        if id < self.next_id {
+            return self.recv();
+        }
+        self.next_id = id + 1;
+        Ok(value)
+    }
+
+    pub async fn latest_async(&mut self) -> Result<T, ReceiverError> {
+        let (value, id) = self.inner.get_latest().ok_or(ReceiverError::NoNewData)?;
+        if id < self.next_id {
+            let (value, id) = self.inner.read_next().await;
+            self.next_id = id + 1;
+            return Ok(value);
+        }
         Ok(value)
     }
 }
