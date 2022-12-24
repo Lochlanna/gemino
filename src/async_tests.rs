@@ -5,7 +5,7 @@ use super::*;
 
 #[tokio::test]
 async fn basic_async() {
-    let wormhole = Wormhole::new(5);
+    let wormhole = Broadcast::new(5);
     let cloned = wormhole.clone();
     spawn(move ||{
         sleep(Duration::from_secs_f64(0.1));
@@ -20,7 +20,7 @@ async fn basic_async() {
 
 #[tokio::test]
 async fn wait_for_next() {
-    let wormhole = Wormhole::new(5);
+    let wormhole = Broadcast::new(5);
     let cloned = wormhole.clone();
     spawn(move ||{
         sleep(Duration::from_secs_f64(0.1));

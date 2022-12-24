@@ -23,11 +23,11 @@ use std::cell::SyncUnsafeCell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-pub trait WormholeValue: Copy + Send + Sync + 'static {}
+pub trait BroadcastValue: Copy + Send + 'static {}
 
-impl<T> WormholeValue for T where T: Copy + Send + Sync + 'static {}
+impl<T> BroadcastValue for T where T: Copy + Send + 'static {}
 
-pub struct Wormhole<T> {
+pub struct Broadcast<T> {
     inner: SyncUnsafeCell<Vec<(T, usize)>>,
     write_head: AtomicUsize,
     read_head: AtomicI64,
@@ -35,7 +35,7 @@ pub struct Wormhole<T> {
     event: event_listener::Event,
 }
 
-impl<T> Wormhole<T>
+impl<T> Broadcast<T>
 {
     pub fn new(buffer_size: usize) -> Arc<Self> {
         let mut inner = Vec::with_capacity(buffer_size);
@@ -83,7 +83,7 @@ impl<T> Wormhole<T>
     }
 }
 
-impl<T> Wormhole<T> where T: WormholeValue,
+impl<T> Broadcast<T> where T: BroadcastValue,
 {
     pub fn send(&self, val: T) {
         let ring = self.inner.get();
