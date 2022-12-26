@@ -1,0 +1,373 @@
+//! Gemino is a multi producer, multi consumer channel which allows broadcasting of data from many
+//! producers across multiple threads to many consumers on multiple threads
+//!
+//! Gemino is very fast thanks to the use of memory barriers and the relaxation of message delivery guarantees
+//! All gemino channels are buffered to allow us to guarantee that a write will always succeed.
+//! When the buffer is filled the writers will begin overwriting the oldest entries. This means
+//! that receivers who do not keep up will loose data. It is the responsibility of the developer to
+//! handle this case.
+//!
+//! Gemino makes use of unsafe and requires nightly for now.
+
+#![feature(sync_unsafe_cell)]
+#![feature(vec_into_raw_parts)]
+
+#[allow(dead_code)]
+mod channel;
+
+#[cfg(test)]
+mod async_tests;
+#[cfg(test)]
+mod tests;
+
+use channel::*;
+use std::fmt::Debug;
+use std::sync::Arc;
+use thiserror::Error;
+
+pub use channel::ChannelValue;
+
+/// A receiver retrieves messages from the channel in order.
+/// If it is running behind an error will be returned and it will skip
+/// ahead to the oldest value in the channel
+pub struct Receiver<T> {
+    inner: Arc<Channel<T>>,
+    next_id: usize,
+}
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("The receiver has lagged behind and missed {0} messages")]
+    Lagged(usize),
+    #[error("There is no new data to retreive from the channel")]
+    NoNewData,
+    #[error("channel buffer size must be at least 1")]
+    BufferTooSmall,
+}
+
+impl<T> Receiver<T> {
+    /// This function is not actually unsafe it's just not the recommended way to use the channel
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::time::Duration;
+    /// # use gemino::channel;
+    /// # tokio_test::block_on(async {
+    /// let (_, rx) = channel(2).expect("couldn't create channel");
+    /// let inner;
+    /// unsafe  {
+    ///     inner = rx.to_inner();
+    /// }
+    /// inner.send(42);
+    /// let v = inner.get(0).await.expect("Couldn't receive latest from channel");
+    /// assert_eq!(v, 42);
+    /// # });
+    ///
+    /// ```
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+        self.inner
+    }
+}
+
+impl<T> Receiver<T>
+where
+    T: ChannelValue,
+{
+    /// Receives the next value from the channel. This function will block until a new value is put onto the
+    /// channel; even if there are no senders. It is probably best to use `[recv_before]`
+    ///
+    /// # Errors
+    /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
+    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
+    /// in the error
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42);
+    /// let v = rx.recv().expect("Couldn't receive from channel");
+    /// assert_eq!(v, 42);
+    /// ```
+    pub fn recv(&mut self) -> Result<T, Error> {
+        let id = self.next_id;
+        match self.inner.get_blocking(id) {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(Error::Lagged(missed))
+            }
+        }
+    }
+
+    /// Asynchronously receives the next value from the channel.
+    ///
+    /// # Errors
+    /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
+    /// The receiver has skipped forward to the oldest avaialble value in the channel and the number of missed messages is returned
+    /// in the error
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// # tokio_test::block_on(async {
+    ///  let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    ///  tx.send(42);
+    ///  let v = rx.async_recv().await.expect("Couldn't receive from channel");
+    ///  assert_eq!(v, 42);
+    /// # });
+    /// ```
+    pub async fn async_recv(&mut self) -> Result<T, Error> {
+        let id = self.next_id;
+        match self.inner.get(id).await {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(Error::Lagged(missed))
+            }
+        }
+    }
+    //TODO how do we deal with missed values in this call?
+    pub fn recv_many(&mut self) -> Vec<T> {
+        let mut result = Vec::new();
+        self.inner.read_batch_from(self.next_id, &mut result);
+        if let Some(value) = result.last() {
+            self.next_id = value.1 + 1;
+        }
+        result.into_iter().map(|(value, _)| value).collect()
+    }
+
+    /// Attempt to retrieve the next value from the channel immediately. This function will not block.
+    /// If there is no new value to retrieve `Error::NoNewData` is returned as an Error.
+    ///
+    /// As with [`recv`] if the receiver is running behind so far that it hasn't read values before they're overwritten
+    /// `Error::Lagged` is returned along with the number of values the receiver has missed. The receiver is then updated
+    /// so that the next call to any recv function will return the oldest value on the channel
+    ///
+    ///
+    /// # Errors
+    /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
+    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
+    /// in the error
+    /// - `Error::NoNewData` -> There is no new data on the channel to be received
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42);
+    /// let v = rx.try_recv().expect("Couldn't receive from channel");
+    /// assert_eq!(v, 42);
+    /// assert!(rx.try_recv().is_err())
+    /// ```
+    pub fn try_recv(&mut self) -> Result<T, Error> {
+        let id = self.next_id;
+        match self.inner.try_get(id) {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(err) => {
+                match err {
+                    ChannelError::IdTooOld(oldest_valid_id) => {
+                        //lagged
+                        self.next_id = oldest_valid_id;
+                        let missed = oldest_valid_id - id;
+                        Err(Error::Lagged(missed))
+                    }
+                    ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+                    ChannelError::Timeout => panic!("try_recv shouldn't be able to timeout"),
+                    _ => panic!("unexpected error"),
+                }
+            }
+        }
+    }
+
+    /// Get the latest value from the channel unless it has already been read in which case wait (blocking)
+    /// for the next value to be put onto the channel
+    /// This will cause the receiver to skip forward to the most recent value meaning that recv will get
+    /// the next latest value.
+    ///
+    ///
+    /// # Errors
+    /// - `Error::NoNewData` -> The channel has not been written to yet
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::thread;
+    /// # use std::time::Duration;
+    /// # use gemino::channel;
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42);
+    /// let v = rx.latest().expect("Couldn't receive latest from channel");
+    /// assert_eq!(v, 42);
+    /// thread::spawn(move || {
+    ///     thread::sleep(Duration::from_secs_f32(0.1));
+    ///     tx.send(72);
+    /// });
+    /// let v = rx.latest().expect("Couldn't receive latest from channel");
+    /// assert_eq!(v, 72);
+    /// ```
+    pub fn latest(&mut self) -> Result<T, Error> {
+        let (value, id) = self.inner.get_latest().ok_or(Error::NoNewData)?;
+        if id < self.next_id {
+            return self.recv();
+        }
+        self.next_id = id + 1;
+        Ok(value)
+    }
+
+    /// Get the latest value from the channel unless it has already been read in which case wait (async)
+    /// for the next value to be put onto the channel
+    /// This will cause the receiver to skip forward to the most recent value meaning that recv will get
+    /// the next latest value.
+    ///
+    ///
+    /// # Errors
+    /// - `Error::NoNewData` -> The channel has not been written to yet
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::time::Duration;
+    /// # use gemino::channel;
+    /// # tokio_test::block_on(async {
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42);
+    /// let v = rx.latest_async().await.expect("Couldn't receive latest from channel");
+    /// assert_eq!(v, 42);
+    /// tokio::spawn(async move {
+    ///     tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
+    ///     tx.send(72);
+    /// });
+    /// let v = rx.latest_async().await.expect("Couldn't receive latest from channel");
+    /// assert_eq!(v, 72);
+    /// # });
+    ///
+    /// ```
+    pub async fn latest_async(&mut self) -> Result<T, Error> {
+        let (value, id) = self.inner.get_latest().ok_or(Error::NoNewData)?;
+        if id < self.next_id {
+            return self.async_recv().await;
+        }
+        self.next_id = id + 1;
+        Ok(value)
+    }
+}
+
+impl<T> Clone for Receiver<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            next_id: self.next_id,
+        }
+    }
+}
+
+impl<T> From<Arc<Channel<T>>> for Receiver<T> {
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+        Self {
+            inner: ring_buffer,
+            next_id: 0,
+        }
+    }
+}
+
+pub struct Sender<T> {
+    inner: Arc<Channel<T>>,
+}
+
+impl<T> Sender<T> {
+    /// This function is not actually unsafe it's just not the recommended way to use the channel
+    ///
+    /// # Errors
+    /// - `Error::BufferTooSmall`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::time::Duration;
+    /// # use gemino::channel;
+    /// # tokio_test::block_on(async {
+    /// let (tx, _) = channel(2).expect("couldn't create channel");
+    /// let inner;
+    /// unsafe  {
+    ///     inner = tx.to_inner();
+    /// }
+    /// inner.send(42);
+    /// let v = inner.get(0).await.expect("Couldn't receive latest from channel");
+    /// assert_eq!(v, 42);
+    /// # });
+    ///
+    /// ```
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+        self.inner
+    }
+}
+
+impl<T> Sender<T>
+where
+    T: ChannelValue,
+{
+    /// put a new value into the channel. This function will always succeed and never block.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42);
+    /// let v = rx.try_recv().expect("Couldn't receive from channel");
+    /// assert_eq!(v, 42);
+    /// ```
+    pub fn send(&self, val: T) {
+        self.inner.send(val);
+    }
+}
+
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T> From<Arc<Channel<T>>> for Sender<T> {
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+        Self { inner: ring_buffer }
+    }
+}
+
+/// Creates a new channel with a given buffer size returning both sender and receiver handles
+///
+/// # Example
+///
+/// ```rust
+/// # use gemino::channel;
+/// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+/// tx.send(42);
+/// let v = rx.try_recv().expect("Couldn't receive from channel");
+/// assert_eq!(v, 42);
+/// ```
+pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
+    let chan = Channel::new(buffer_size).or(Err(Error::BufferTooSmall))?;
+    let sender = Sender::from(chan.clone());
+    let receiver = Receiver::from(chan);
+    Ok((sender, receiver))
+}

@@ -5,11 +5,11 @@ use std::sync::mpsc::channel;
 use test::Bencher;
 
 #[bench]
-fn sequential_wormhole(b: &mut Bencher) {
+fn sequential_gemino(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
     b.iter(|| {
-        let (producer, mut consumer) = wormhole::channel(100);
+        let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
         for i in 0..1000 {
             producer.send(i);
             let v = consumer.recv().expect("couldn't get value");

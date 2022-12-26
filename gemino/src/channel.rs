@@ -9,12 +9,14 @@ impl<T> ChannelValue for T where T: Copy + Send + 'static {}
 
 #[derive(Error, Debug)]
 pub enum ChannelError {
-    #[error("channel no longer contains the value")]
-    IdTooOld,
+    #[error("channel no longer contains the requested value")]
+    IdTooOld(usize),
     #[error("value with the given ID has not yet been written to the channel")]
     IDNotYetWritten,
     #[error("operation timed out")]
     Timeout,
+    #[error("channel buffer size must be at least 1")]
+    BufferTooSmall
 }
 
 pub struct Channel<T> {
@@ -26,20 +28,23 @@ pub struct Channel<T> {
 }
 
 impl<T> Channel<T> {
-    pub(crate) fn new(buffer_size: usize) -> Arc<Self> {
+    pub(crate) fn new(buffer_size: usize) -> Result<Arc<Self>, ChannelError> {
+        if buffer_size < 1 {
+            return Err(ChannelError::BufferTooSmall)
+        }
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
             let (raw, _, allocated) = inner.into_raw_parts();
             inner = Vec::from_raw_parts(raw, allocated, allocated);
         }
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             inner: SyncUnsafeCell::new(inner),
             write_head: AtomicUsize::new(0),
             read_head: AtomicI64::new(-1),
             capacity: buffer_size,
             event: event_listener::Event::new(),
-        })
+        }))
     }
 
     pub fn read_head(&self) -> i64 {
@@ -145,7 +150,7 @@ where
             }
         }
 
-        return Err(ChannelError::IdTooOld);
+        return Err(ChannelError::IdTooOld(self.oldest()));
     }
 
     pub fn get_latest(&self) -> Option<(T, usize)> {
@@ -163,7 +168,7 @@ where
     pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld) {
+            if matches!(err, ChannelError::IdTooOld(_)) {
                 return immediate;
             }
         } else {
@@ -171,6 +176,7 @@ where
         }
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
+            // create the listener then check again as the creation can take a long time!
             let listener = self.event.listen();
             if self.read_head.load(Ordering::Acquire) < id as i64 {
                 listener.wait();
@@ -186,7 +192,7 @@ where
     ) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld) {
+            if matches!(err, ChannelError::IdTooOld(_)) {
                 return immediate;
             }
         } else {
@@ -207,7 +213,7 @@ where
     pub async fn get(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld) {
+            if matches!(err, ChannelError::IdTooOld(_)) {
                 return immediate;
             }
         } else {

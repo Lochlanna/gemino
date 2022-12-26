@@ -1,38 +1,37 @@
 extern crate test;
-use super::*;
 use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;
 use std::sync::mpsc::channel;
 use std::thread;
 use std::thread::JoinHandle;
 use test::Bencher;
-use wormhole::Receiver;
-use wormhole::Sender;
+use gemino::Receiver;
+use gemino::Sender;
 
 trait BenchReceiver {
-    type Item: wormhole::ChannelValue;
+    type Item: gemino::ChannelValue;
     fn bench_recv(&mut self) -> Self::Item;
 }
 
 trait BenchSender {
-    type Item: wormhole::ChannelValue;
+    type Item: gemino::ChannelValue;
     fn bench_send(&self, v: Self::Item);
 }
 
 impl<T> BenchReceiver for Receiver<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
-        self.recv().expect("couldn't get value from wormhole")
+        self.recv().expect("couldn't get value from gemino")
     }
 }
 
 impl<T> BenchSender for Sender<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -43,7 +42,7 @@ where
 
 impl<T> BenchReceiver for kanal::Receiver<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -54,7 +53,7 @@ where
 
 impl<T> BenchSender for kanal::Sender<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -65,7 +64,7 @@ where
 
 impl<T> BenchReceiver for std::sync::mpsc::Receiver<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -76,7 +75,7 @@ where
 
 impl<T> BenchSender for std::sync::mpsc::Sender<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -87,7 +86,7 @@ where
 
 impl<T> BenchReceiver for crossbeam_channel::Receiver<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -98,7 +97,7 @@ where
 
 impl<T> BenchSender for crossbeam_channel::Sender<T>
 where
-    T: wormhole::ChannelValue,
+    T: gemino::ChannelValue,
 {
     type Item = T;
 
@@ -136,12 +135,12 @@ fn write_all<S: BenchSender + 'static + Send>(produce: S, from: &Vec<S::Item>) -
 }
 
 #[bench]
-fn simultanious_wormhole(b: &mut Bencher) {
+fn simultanious_gemino(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
     let test_input: Vec<u32> = (0..1000).collect();
     b.iter(|| {
-        let (producer, consumer) = wormhole::channel(1024);
+        let (producer, consumer) = gemino::channel(1024).expect("couldn't create channel");
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
         writer.join().expect("coudln't join writer");

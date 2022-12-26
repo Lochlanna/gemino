@@ -60,11 +60,11 @@ async fn tokio_broadcast() {
 }
 
 #[tokio::test]
-async fn wormhole() {
-    measure("wormhole::Broadcast", 5, async || {
+async fn gemino() {
+    measure("gemino::Broadcast", 5, async || {
         let num_to_write = 1000;
 
-        let (tx, mut rx) = wormhole::channel(num_to_write + 10);
+        let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
                 tx.send(i);
@@ -76,7 +76,7 @@ async fn wormhole() {
                 let value = rx
                     .async_recv()
                     .await
-                    .expect("got an error from wormhole recv");
+                    .expect("got an error from gemino recv");
                 results.push(value);
             }
             results
@@ -104,7 +104,7 @@ async fn tokio_broadcast_multi_reader() {
         let reader_a = tokio::spawn(async move {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
-                let value = rx.recv().await.expect("got an error from wormhole recv");
+                let value = rx.recv().await.expect("got an error from gemino recv");
                 results.push(value);
             }
             results
@@ -115,7 +115,7 @@ async fn tokio_broadcast_multi_reader() {
                 let value = rx_clone
                     .recv()
                     .await
-                    .expect("got an error from wormhole recv");
+                    .expect("got an error from gemino recv");
                 results.push(value);
             }
             results
@@ -132,11 +132,11 @@ async fn tokio_broadcast_multi_reader() {
 }
 
 #[tokio::test]
-async fn wormhole_multi_reader() {
-    measure("wormhole::Broadcast - multi reader", 5, async || {
+async fn gemino_multi_reader() {
+    measure("gemino::Broadcast - multi reader", 5, async || {
         let num_to_write = 1000;
 
-        let (tx, mut rx) = wormhole::channel(num_to_write + 10);
+        let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
         let mut rx_clone = rx.clone();
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
@@ -149,7 +149,7 @@ async fn wormhole_multi_reader() {
                 let value = rx
                     .async_recv()
                     .await
-                    .expect("got an error from wormhole recv");
+                    .expect("got an error from gemino recv");
                 results.push(value);
             }
             results
@@ -160,7 +160,7 @@ async fn wormhole_multi_reader() {
                 let value = rx_clone
                     .async_recv()
                     .await
-                    .expect("got an error from wormhole recv");
+                    .expect("got an error from gemino recv");
                 results.push(value);
             }
             results
