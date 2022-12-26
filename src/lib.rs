@@ -5,7 +5,6 @@
 #![feature(async_closure)]
 
 #[allow(dead_code)]
-mod mpmc_broadcast;
 mod channel;
 
 #[cfg(test)]
