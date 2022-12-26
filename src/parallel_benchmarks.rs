@@ -4,11 +4,10 @@ use super::*;
 use std::sync::mpsc::channel;
 use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;
-use chrono::Duration;
 use std::thread::{JoinHandle};
 use std::thread;
-use crate::BroadcastReceiver;
-use crate::BroadcastSender;
+use crate::Receiver;
+use crate::Sender;
 
 trait BenchReceiver {
     type Item: ChannelValue;
@@ -20,7 +19,7 @@ trait BenchSender {
     fn bench_send(&self, v: Self::Item);
 }
 
-impl<T> BenchReceiver for BroadcastReceiver<T> where T: ChannelValue {
+impl<T> BenchReceiver for Receiver<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -28,7 +27,7 @@ impl<T> BenchReceiver for BroadcastReceiver<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchSender for BroadcastSender<T> where T: ChannelValue {
+impl<T> BenchSender for Sender<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -124,7 +123,7 @@ fn simultanious_wormhole(b: &mut Bencher) {
     // method of Bencher
     let test_input: Vec<u32> = (0..1000).collect();
     b.iter(|| {
-        let (producer, mut consumer) = crate::channel(1024);
+        let (producer, consumer) = crate::channel(1024);
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
         writer.join().expect("coudln't join writer");

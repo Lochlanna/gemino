@@ -19,39 +19,39 @@ mod parallel_benchmarks;
 #[cfg(test)]
 mod async_benchmarks;
 
-use std::fmt::{Debug, Formatter, Write};
+use std::fmt::{Debug, Formatter};
 use channel::*;
 use std::sync::Arc;
 
-pub struct BroadcastReceiver<T> {
+pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
     next_id: usize,
 }
 
-pub enum ReceiverError {
+pub enum Error {
     Lagged(usize),
     NoNewData,
 }
 
-impl ReceiverError {
+impl Error {
     pub fn lagged(&self)->usize {
-        if let ReceiverError::Lagged(missed) = self {
+        if let Error::Lagged(missed) = self {
             return *missed;
         }
         0
     }
 }
 
-impl Debug for ReceiverError {
+impl Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return match self {
-            ReceiverError::Lagged(_) => f.write_str("receiver is running behind and has missed out on messages"),
-            ReceiverError::NoNewData => f.write_str("no new data in channel"),
+            Error::Lagged(_) => f.write_str("receiver is running behind and has missed out on messages"),
+            Error::NoNewData => f.write_str("no new data in channel"),
         }
     }
 }
 
-impl<T> BroadcastReceiver<T> {
+impl<T> Receiver<T> {
     // This isn't actually unsafe at all.
     // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
     // while still enabling explicit weirdness
@@ -60,11 +60,11 @@ impl<T> BroadcastReceiver<T> {
     }
 }
 
-impl<T> BroadcastReceiver<T>
+impl<T> Receiver<T>
     where
         T: ChannelValue,
 {
-    pub(crate) fn recv(&mut self) -> Result<T, ReceiverError> {
+    pub(crate) fn recv(&mut self) -> Result<T, Error> {
         let id = self.next_id;
         match self.inner.get_blocking(id) {
             Ok(value) => {
@@ -75,12 +75,12 @@ impl<T> BroadcastReceiver<T>
                 //lagged
                 self.next_id = self.inner.oldest();
                 let missed = self.next_id - id;
-                Err(ReceiverError::Lagged(missed))
+                Err(Error::Lagged(missed))
             }
         }
     }
 
-    pub async fn async_recv(&mut self) -> Result<T, ReceiverError> {
+    pub async fn async_recv(&mut self) -> Result<T, Error> {
         let id = self.next_id;
         match self.inner.get(id).await {
             Ok(value) => {
@@ -91,7 +91,7 @@ impl<T> BroadcastReceiver<T>
                 //lagged
                 self.next_id = self.inner.oldest();
                 let missed = self.next_id - id;
-                Err(ReceiverError::Lagged(missed))
+                Err(Error::Lagged(missed))
             }
         }
     }
@@ -105,7 +105,7 @@ impl<T> BroadcastReceiver<T>
         result.into_iter().map(|(value, _)| value).collect()
     }
 
-    pub fn try_recv(&mut self) -> Result<T, ReceiverError> {
+    pub fn try_recv(&mut self) -> Result<T, Error> {
         let id = self.next_id;
         match self.inner.try_get(id) {
             Ok(value) => {
@@ -116,13 +116,13 @@ impl<T> BroadcastReceiver<T>
                 //lagged
                 self.next_id = self.inner.oldest();
                 let missed = self.next_id - id;
-                Err(ReceiverError::Lagged(missed))
+                Err(Error::Lagged(missed))
             }
         }
     }
 
-    pub fn latest(&mut self) -> Result<T, ReceiverError> {
-        let (value, id) = self.inner.get_latest().ok_or(ReceiverError::NoNewData)?;
+    pub fn latest(&mut self) -> Result<T, Error> {
+        let (value, id) = self.inner.get_latest().ok_or(Error::NoNewData)?;
         if id < self.next_id {
             return self.recv();
         }
@@ -130,8 +130,8 @@ impl<T> BroadcastReceiver<T>
         Ok(value)
     }
 
-    pub async fn latest_async(&mut self) -> Result<T, ReceiverError> {
-        let (value, id) = self.inner.get_latest().ok_or(ReceiverError::NoNewData)?;
+    pub async fn latest_async(&mut self) -> Result<T, Error> {
+        let (value, id) = self.inner.get_latest().ok_or(Error::NoNewData)?;
         if id < self.next_id {
             let (value, id) = self.inner.read_next().await;
             self.next_id = id + 1;
@@ -141,7 +141,7 @@ impl<T> BroadcastReceiver<T>
     }
 }
 
-impl<T> Clone for BroadcastReceiver<T> {
+impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -150,7 +150,7 @@ impl<T> Clone for BroadcastReceiver<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for BroadcastReceiver<T>
+impl<T> From<Arc<Channel<T>>> for Receiver<T>
 {
     fn from(ring_buffer: Arc<Channel<T>>) -> Self {
         Self { inner: ring_buffer, next_id: 0 }
@@ -158,11 +158,11 @@ impl<T> From<Arc<Channel<T>>> for BroadcastReceiver<T>
 }
 
 
-pub struct BroadcastSender<T> {
+pub struct Sender<T> {
     inner: Arc<Channel<T>>
 }
 
-impl<T> BroadcastSender<T> {
+impl<T> Sender<T> {
     // This isn't actually unsafe at all.
     // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
     // while still enabling explicit weirdness
@@ -171,13 +171,13 @@ impl<T> BroadcastSender<T> {
     }
 }
 
-impl<T> BroadcastSender<T> where T: ChannelValue {
+impl<T> Sender<T> where T: ChannelValue {
     pub(crate) fn send(&self, val: T) {
         self.inner.send(val);
     }
 }
 
-impl<T> Clone for BroadcastSender<T> {
+impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone()
@@ -185,7 +185,7 @@ impl<T> Clone for BroadcastSender<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for BroadcastSender<T> {
+impl<T> From<Arc<Channel<T>>> for Sender<T> {
     fn from(ring_buffer: Arc<Channel<T>>) -> Self {
         Self {
             inner: ring_buffer
@@ -194,10 +194,10 @@ impl<T> From<Arc<Channel<T>>> for BroadcastSender<T> {
 }
 
 
-pub fn channel<T>(buffer_size:usize) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
+pub fn channel<T>(buffer_size:usize) -> (Sender<T>, Receiver<T>) {
     let chan = Channel::new(buffer_size);
-    let sender = BroadcastSender::from(chan.clone());
-    let receiver = BroadcastReceiver::from(chan);
+    let sender = Sender::from(chan.clone());
+    let receiver = Receiver::from(chan);
     (sender, receiver)
 }
 

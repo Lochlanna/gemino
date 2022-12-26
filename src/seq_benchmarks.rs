@@ -1,6 +1,5 @@
 extern crate test;
 use test::Bencher;
-use super::*;
 use std::sync::mpsc::channel;
 use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;

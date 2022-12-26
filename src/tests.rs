@@ -1,16 +1,15 @@
 extern crate test;
 
-use std::fmt::Debug;
 use super::*;
 use chrono::Duration;
 use log::warn;
 use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
-use crate::{BroadcastReceiver, BroadcastSender, ReceiverError};
+use crate::{Receiver, Sender, Error};
 
 fn read_sequential<T: ChannelValue + Sync>(
-    mut consume: BroadcastReceiver<T>,
+    mut consume: Receiver<T>,
     starting_at: usize,
     until: usize,
     or_time: Duration,
@@ -19,14 +18,14 @@ fn read_sequential<T: ChannelValue + Sync>(
         let mut results = Vec::with_capacity(until - starting_at);
         let mut next = starting_at;
         let end_time= chrono::Utc::now() + chrono::Duration::from(or_time);
-        let mut timeout = or_time != Duration::zero();
+        let timeout = or_time != Duration::zero();
 
         while next <= until && (!timeout || chrono::Utc::now() < end_time){
             match consume.recv() {
                 Ok(value) => results.push(value),
                 Err(err) => {
                     match err {
-                        ReceiverError::Lagged(skip) => {
+                        Error::Lagged(skip) => {
                             warn!("falling behind!");
                             next += skip;
                         }
@@ -42,7 +41,7 @@ fn read_sequential<T: ChannelValue + Sync>(
 }
 
 fn write_all<T: ChannelValue + Sync>(
-    produce: BroadcastSender<T>,
+    produce: Sender<T>,
     from: &Vec<T>,
     at_rate_of: i32,
     per: Duration,
