@@ -69,21 +69,22 @@ fn write_all<T: BroadcastValue>(
 
 #[test]
 fn sequential_read_write() {
-    let wormhole = Broadcast::new(2);
+    let wormhole = Channel::new(2);
     wormhole.send(42);
     wormhole.send(21);
-    assert_eq!(wormhole.try_get(0).expect("no value"), (42, 0));
-    assert_eq!(wormhole.try_get(1).expect("no value"), (21, 1));
+    assert_eq!(wormhole.try_get(0).expect("no value"), 42);
+    assert_eq!(wormhole.try_get(1).expect("no value"), 21);
     assert_eq!(wormhole.get_latest().expect("no value"), (21, 1));
     wormhole.send(12);
     assert_eq!(wormhole.get_latest().expect("no value"), (12, 2));
-    assert_eq!(wormhole.try_get(0).expect("no value"), (12, 2));
+    assert!(wormhole.try_get(0).is_err());
+    assert_eq!(wormhole.try_get(2).expect("no value"), 12);
 }
 
 #[test]
 fn simultaneous_read_write_no_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = Broadcast::new(20).split();
+    let (producer, consumer) = Channel::new(20).split();
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -94,7 +95,7 @@ fn simultaneous_read_write_no_overwrite() {
 #[test]
 fn simultaneous_read_write_with_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = Broadcast::new(3).split();
+    let (producer, consumer) = Channel::new(3).split();
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -105,7 +106,7 @@ fn simultaneous_read_write_with_overwrite() {
 #[test]
 fn simultaneous_read_write_multiple_reader() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = Broadcast::new(20).split();
+    let (producer, consumer) = Channel::new(20).split();
     let reader_a = read_sequential(consumer.clone(), 0, test_input.len() - 1, Duration::zero());
     let reader_b = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
@@ -118,12 +119,11 @@ fn simultaneous_read_write_multiple_reader() {
 
 #[test]
 fn seq_read_write_many() {
-    let wormhole = Broadcast::new(100);
+    let wormhole = Channel::new(100);
     for i in 0..1000 {
         wormhole.send(i);
-        let (v, id) = wormhole.try_get(i).expect("couldn't get value");
+        let v = wormhole.try_get(i).expect("couldn't get value");
         assert_eq!(v, i);
-        assert_eq!(id, i);
     }
 }
 

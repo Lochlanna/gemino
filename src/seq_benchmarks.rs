@@ -12,7 +12,7 @@ fn sequential_wormhole(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
     b.iter(|| {
-        let (producer, mut consumer) = Broadcast::new(100).split();
+        let (producer, mut consumer) = Channel::new(100).split();
         for i in 0..1000 {
             producer.send(i);
             let v = consumer.recv().expect("couldn't get value");

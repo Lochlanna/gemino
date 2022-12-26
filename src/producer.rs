@@ -9,14 +9,14 @@ pub trait Sender {
 }
 
 pub struct WormholeSender<T> {
-    inner: Arc<Broadcast<T>>
+    inner: Arc<Channel<T>>
 }
 
 impl<T> WormholeSender<T> {
     // This isn't actually unsafe at all.
     // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
     // while still enabling explicit weirdness
-    pub unsafe fn to_inner(self) -> Arc<Broadcast<T>> {
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
         self.inner
     }
 }
@@ -37,8 +37,8 @@ impl<T> Clone for WormholeSender<T> {
     }
 }
 
-impl<T> From<Arc<Broadcast<T>>> for WormholeSender<T> {
-    fn from(ring_buffer: Arc<Broadcast<T>>) -> Self {
+impl<T> From<Arc<Channel<T>>> for WormholeSender<T> {
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
         Self {
             inner: ring_buffer
         }

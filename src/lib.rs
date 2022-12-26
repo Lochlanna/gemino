@@ -1,6 +1,8 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
+
 #![feature(test)]
+#![feature(async_closure)]
 
 #[allow(dead_code)]
 
@@ -22,12 +24,24 @@ use producer::WormholeSender;
 use std::cell::SyncUnsafeCell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+use thiserror::Error;
 
 pub trait BroadcastValue: Copy + Send + 'static {}
 
 impl<T> BroadcastValue for T where T: Copy + Send + 'static {}
 
-pub struct Broadcast<T> {
+#[derive(Error, Debug)]
+pub enum ChannelError {
+    #[error("channel no longer contains the value")]
+    IdTooOld,
+    #[error("value with the given ID has not yet been written to the channel")]
+    IDNotYetWritten,
+    #[error("operation timed out")]
+    Timeout
+}
+
+pub struct Channel<T> {
     inner: SyncUnsafeCell<Vec<(T, usize)>>,
     write_head: AtomicUsize,
     read_head: AtomicI64,
@@ -35,7 +49,7 @@ pub struct Broadcast<T> {
     event: event_listener::Event,
 }
 
-impl<T> Broadcast<T>
+impl<T> Channel<T>
 {
     pub fn new(buffer_size: usize) -> Arc<Self> {
         let mut inner = Vec::with_capacity(buffer_size);
@@ -83,7 +97,7 @@ impl<T> Broadcast<T>
     }
 }
 
-impl<T> Broadcast<T> where T: BroadcastValue,
+impl<T> Channel<T> where T: BroadcastValue,
 {
     pub fn send(&self, val: T) {
         let ring = self.inner.get();
@@ -151,17 +165,22 @@ impl<T> Broadcast<T> where T: BroadcastValue,
         };
     }
 
-    pub fn try_get(&self, id: usize) -> Option<(T, usize)> {
+    pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         let ring = self.inner.get();
         let index = id % self.capacity;
 
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 || id > safe_head as usize {
-            return None;
+            return Err(ChannelError::IDNotYetWritten);
         }
         unsafe {
-            return Some((*ring)[index]);
+            let (result, result_id) = (*ring)[index];
+            if result_id == id {
+                return Ok(result)
+            }
         }
+
+        return Err(ChannelError::IdTooOld)
     }
 
     pub fn get_latest(&self) -> Option<(T, usize)> {
@@ -176,46 +195,62 @@ impl<T> Broadcast<T> where T: BroadcastValue,
         }
     }
 
-    pub fn get_blocking(&self, id: usize) -> (T, usize) {
+    pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
-        if immediate.is_some() {
-            //This value already exists so we're all good to go
-            return immediate.unwrap();
+        if let Err(err) = &immediate {
+            if matches!(err, ChannelError::IdTooOld) {
+                return immediate
+            }
+        } else {
+            return immediate
         }
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
-            self.event.listen().wait()
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as i64 {
+                listener.wait();
+            }
         }
-        self.try_get(id).unwrap()
+        Ok(self.try_get(id).unwrap())
     }
 
-    pub fn get_blocking_before(&self, id: usize, before: std::time::Instant) -> Option<(T, usize)> {
+    pub fn get_blocking_before(&self, id: usize, before: std::time::Instant) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
-        if immediate.is_some() {
-            //This value already exists so we're all good to go
-            return immediate;
+        if let Err(err) = &immediate {
+            if matches!(err, ChannelError::IdTooOld) {
+                return immediate
+            }
+        } else {
+            return immediate
         }
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
-            if before.le(&std::time::Instant::now()) {
-                return None
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as i64 {
+                if !listener.wait_deadline(before) {
+                    return Err(ChannelError::Timeout);
+                }
             }
-            self.event.listen().wait_deadline(before);
         }
         self.try_get(id)
     }
 
-    pub async fn get(&self, id: usize) -> (T, usize) {
+    pub async fn get(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
-        if immediate.is_some() {
-            //This value already exists so we're all good to go
-            return immediate.unwrap();
+        if let Err(err) = &immediate {
+            if matches!(err, ChannelError::IdTooOld) {
+                return immediate
+            }
+        } else {
+            return immediate
         }
-        // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
-            self.event.listen().await;
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as i64 {
+                listener.await;
+            }
         }
-        self.try_get(id).unwrap()
+        Ok(self.try_get(id).unwrap())
     }
 
     pub async fn read_next(&self) -> (T, usize) {

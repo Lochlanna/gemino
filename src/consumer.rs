@@ -10,7 +10,7 @@ pub trait Receiver {
 }
 
 pub struct WormholeReceiver<T> {
-    inner: Arc<Broadcast<T>>,
+    inner: Arc<Channel<T>>,
     next_id: usize,
 }
 
@@ -41,7 +41,7 @@ impl<T> WormholeReceiver<T> {
     // This isn't actually unsafe at all.
     // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
     // while still enabling explicit weirdness
-    pub unsafe fn to_inner(self) -> Arc<Broadcast<T>> {
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
         self.inner
     }
 }
@@ -51,15 +51,19 @@ impl<T> Receiver for WormholeReceiver<T> where T: BroadcastValue {
     type Error = ReceiverError;
 
     fn recv(&mut self) -> Result<Self::Item, Self::Error> {
-        let (value, id) = self.inner.get_blocking(self.next_id);
-        if id != self.next_id {
-            //lagged
-            self.next_id = self.inner.oldest();
-            let missed = id - self.next_id;
-            return Err(ReceiverError::Lagged(missed));
+        let id = self.next_id;
+        match self.inner.get_blocking(id) {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(ReceiverError::Lagged(missed))
+            }
         }
-        self.next_id = self.next_id + 1;
-        Ok(value)
     }
 }
 
@@ -68,15 +72,19 @@ where
     T: BroadcastValue,
 {
     pub async fn async_recv(&mut self) -> Result<T, ReceiverError> {
-        let (value, id) = self.inner.get(self.next_id).await;
-        if id != self.next_id {
-            //lagged
-            self.next_id = self.inner.oldest();
-            let missed = id - self.next_id;
-            return Err(ReceiverError::Lagged(missed));
+        let id = self.next_id;
+        match self.inner.get(id).await {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(ReceiverError::Lagged(missed))
+            }
         }
-        self.next_id = self.next_id + 1;
-        Ok(value)
     }
     //TODO how do we deal with missed values in this call?
     pub fn recv_many(&mut self) -> Vec<T> {
@@ -89,15 +97,19 @@ where
     }
 
     pub fn try_recv(&mut self) -> Result<T, ReceiverError> {
-        let (value, id) = self.inner.try_get(self.next_id).ok_or(ReceiverError::NoNewData)?;
-        if id > self.next_id {
-            //lagged
-            self.next_id = self.inner.oldest();
-            let missed = id - self.next_id;
-            return Err(ReceiverError::Lagged(missed));
+        let id = self.next_id;
+        match self.inner.try_get(id) {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(ReceiverError::Lagged(missed))
+            }
         }
-        self.next_id += 1;
-        Ok(value)
     }
 
     pub fn latest(&mut self) -> Result<T, ReceiverError> {
@@ -129,9 +141,9 @@ impl<T> Clone for WormholeReceiver<T> {
     }
 }
 
-impl<T> From<Arc<Broadcast<T>>> for WormholeReceiver<T>
+impl<T> From<Arc<Channel<T>>> for WormholeReceiver<T>
 {
-    fn from(ring_buffer: Arc<Broadcast<T>>) -> Self {
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
         Self { inner: ring_buffer, next_id: 0 }
     }
 }
