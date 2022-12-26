@@ -1,9 +1,6 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
 
-#![feature(test)]
-#![feature(async_closure)]
-
 #[allow(dead_code)]
 mod channel;
 
@@ -11,16 +8,12 @@ mod channel;
 mod async_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod seq_benchmarks;
-#[cfg(test)]
-mod parallel_benchmarks;
-#[cfg(test)]
-mod async_benchmarks;
 
-use std::fmt::{Debug, Formatter};
 use channel::*;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+
+pub use channel::ChannelValue;
 
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
@@ -33,7 +26,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn lagged(&self)->usize {
+    pub fn lagged(&self) -> usize {
         if let Error::Lagged(missed) = self {
             return *missed;
         }
@@ -44,9 +37,11 @@ impl Error {
 impl Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return match self {
-            Error::Lagged(_) => f.write_str("receiver is running behind and has missed out on messages"),
+            Error::Lagged(_) => {
+                f.write_str("receiver is running behind and has missed out on messages")
+            }
             Error::NoNewData => f.write_str("no new data in channel"),
-        }
+        };
     }
 }
 
@@ -60,10 +55,10 @@ impl<T> Receiver<T> {
 }
 
 impl<T> Receiver<T>
-    where
-        T: ChannelValue,
+where
+    T: ChannelValue,
 {
-    pub(crate) fn recv(&mut self) -> Result<T, Error> {
+    pub fn recv(&mut self) -> Result<T, Error> {
         let id = self.next_id;
         match self.inner.get_blocking(id) {
             Ok(value) => {
@@ -149,16 +144,17 @@ impl<T> Clone for Receiver<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for Receiver<T>
-{
+impl<T> From<Arc<Channel<T>>> for Receiver<T> {
     fn from(ring_buffer: Arc<Channel<T>>) -> Self {
-        Self { inner: ring_buffer, next_id: 0 }
+        Self {
+            inner: ring_buffer,
+            next_id: 0,
+        }
     }
 }
 
-
 pub struct Sender<T> {
-    inner: Arc<Channel<T>>
+    inner: Arc<Channel<T>>,
 }
 
 impl<T> Sender<T> {
@@ -170,8 +166,11 @@ impl<T> Sender<T> {
     }
 }
 
-impl<T> Sender<T> where T: ChannelValue {
-    pub(crate) fn send(&self, val: T) {
+impl<T> Sender<T>
+where
+    T: ChannelValue,
+{
+    pub fn send(&self, val: T) {
         self.inner.send(val);
     }
 }
@@ -179,25 +178,20 @@ impl<T> Sender<T> where T: ChannelValue {
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone()
+            inner: self.inner.clone(),
         }
     }
 }
 
 impl<T> From<Arc<Channel<T>>> for Sender<T> {
     fn from(ring_buffer: Arc<Channel<T>>) -> Self {
-        Self {
-            inner: ring_buffer
-        }
+        Self { inner: ring_buffer }
     }
 }
 
-
-pub fn channel<T>(buffer_size:usize) -> (Sender<T>, Receiver<T>) {
+pub fn channel<T>(buffer_size: usize) -> (Sender<T>, Receiver<T>) {
     let chan = Channel::new(buffer_size);
     let sender = Sender::from(chan.clone());
     let receiver = Receiver::from(chan);
     (sender, receiver)
 }
-
-

@@ -1,12 +1,10 @@
-extern crate test;
-
 use super::*;
+use crate::{Error, Receiver, Sender};
 use chrono::Duration;
 use log::warn;
 use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
-use crate::{Receiver, Sender, Error};
 
 fn read_sequential<T: ChannelValue + Sync>(
     mut consume: Receiver<T>,
@@ -17,21 +15,19 @@ fn read_sequential<T: ChannelValue + Sync>(
     let jh = thread::spawn(move || {
         let mut results = Vec::with_capacity(until - starting_at);
         let mut next = starting_at;
-        let end_time= chrono::Utc::now() + chrono::Duration::from(or_time);
+        let end_time = chrono::Utc::now() + chrono::Duration::from(or_time);
         let timeout = or_time != Duration::zero();
 
-        while next <= until && (!timeout || chrono::Utc::now() < end_time){
+        while next <= until && (!timeout || chrono::Utc::now() < end_time) {
             match consume.recv() {
                 Ok(value) => results.push(value),
-                Err(err) => {
-                    match err {
-                        Error::Lagged(skip) => {
-                            warn!("falling behind!");
-                            next += skip;
-                        }
-                        _ => {}
+                Err(err) => match err {
+                    Error::Lagged(skip) => {
+                        warn!("falling behind!");
+                        next += skip;
                     }
-                }
+                    _ => {}
+                },
             }
             next += 1;
         }
@@ -124,4 +120,3 @@ fn seq_read_write_many() {
         assert_eq!(v, i);
     }
 }
-

@@ -1,25 +1,28 @@
 extern crate test;
-use test::Bencher;
 use super::*;
-use std::sync::mpsc::channel;
 use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;
-use std::thread::{JoinHandle};
+use std::sync::mpsc::channel;
 use std::thread;
-use crate::Receiver;
-use crate::Sender;
+use std::thread::JoinHandle;
+use test::Bencher;
+use wormhole::Receiver;
+use wormhole::Sender;
 
 trait BenchReceiver {
-    type Item: ChannelValue;
+    type Item: wormhole::ChannelValue;
     fn bench_recv(&mut self) -> Self::Item;
 }
 
 trait BenchSender {
-    type Item: ChannelValue;
+    type Item: wormhole::ChannelValue;
     fn bench_send(&self, v: Self::Item);
 }
 
-impl<T> BenchReceiver for Receiver<T> where T: ChannelValue {
+impl<T> BenchReceiver for Receiver<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -27,7 +30,10 @@ impl<T> BenchReceiver for Receiver<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchSender for Sender<T> where T: ChannelValue {
+impl<T> BenchSender for Sender<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -35,7 +41,10 @@ impl<T> BenchSender for Sender<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchReceiver for kanal::Receiver<T> where T: ChannelValue {
+impl<T> BenchReceiver for kanal::Receiver<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -43,7 +52,10 @@ impl<T> BenchReceiver for kanal::Receiver<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchSender for kanal::Sender<T> where T: ChannelValue {
+impl<T> BenchSender for kanal::Sender<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -51,8 +63,10 @@ impl<T> BenchSender for kanal::Sender<T> where T: ChannelValue {
     }
 }
 
-
-impl<T> BenchReceiver for std::sync::mpsc::Receiver<T> where T: ChannelValue {
+impl<T> BenchReceiver for std::sync::mpsc::Receiver<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -60,7 +74,10 @@ impl<T> BenchReceiver for std::sync::mpsc::Receiver<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchSender for std::sync::mpsc::Sender<T> where T: ChannelValue {
+impl<T> BenchSender for std::sync::mpsc::Sender<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -68,7 +85,10 @@ impl<T> BenchSender for std::sync::mpsc::Sender<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchReceiver for crossbeam_channel::Receiver<T> where T: ChannelValue {
+impl<T> BenchReceiver for crossbeam_channel::Receiver<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -76,14 +96,16 @@ impl<T> BenchReceiver for crossbeam_channel::Receiver<T> where T: ChannelValue {
     }
 }
 
-impl<T> BenchSender for crossbeam_channel::Sender<T> where T: ChannelValue {
+impl<T> BenchSender for crossbeam_channel::Sender<T>
+where
+    T: wormhole::ChannelValue,
+{
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
         self.send(v);
     }
 }
-
 
 fn read_sequential<R: BenchReceiver + 'static + Send>(
     mut consume: R,
@@ -103,10 +125,7 @@ fn read_sequential<R: BenchReceiver + 'static + Send>(
     jh
 }
 
-fn write_all<S: BenchSender + 'static + Send>(
-    produce: S,
-    from: &Vec<S::Item>,
-) -> JoinHandle<()> {
+fn write_all<S: BenchSender + 'static + Send>(produce: S, from: &Vec<S::Item>) -> JoinHandle<()> {
     let from = from.clone();
     let jh = thread::spawn(move || {
         for item in from {
@@ -116,14 +135,13 @@ fn write_all<S: BenchSender + 'static + Send>(
     jh
 }
 
-
 #[bench]
 fn simultanious_wormhole(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
     let test_input: Vec<u32> = (0..1000).collect();
     b.iter(|| {
-        let (producer, consumer) = crate::channel(1024);
+        let (producer, consumer) = wormhole::channel(1024);
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
         writer.join().expect("coudln't join writer");

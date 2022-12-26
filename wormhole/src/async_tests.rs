@@ -1,12 +1,12 @@
+use super::*;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use super::*;
 
 #[tokio::test]
 async fn basic_async() {
     let chan = Channel::new(5);
     let cloned = chan.clone();
-    spawn(move ||{
+    spawn(move || {
         sleep(Duration::from_secs_f64(0.1));
         cloned.send(42);
         println!("value has been put onto the ring buffer")
@@ -20,7 +20,7 @@ async fn basic_async() {
 async fn wait_for_next() {
     let chan = Channel::new(5);
     let cloned = chan.clone();
-    spawn(move ||{
+    spawn(move || {
         sleep(Duration::from_secs_f64(0.1));
         cloned.send(42);
         println!("value has been put onto the ring buffer")

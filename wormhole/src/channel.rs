@@ -14,7 +14,7 @@ pub enum ChannelError {
     #[error("value with the given ID has not yet been written to the channel")]
     IDNotYetWritten,
     #[error("operation timed out")]
-    Timeout
+    Timeout,
 }
 
 pub struct Channel<T> {
@@ -25,8 +25,7 @@ pub struct Channel<T> {
     event: event_listener::Event,
 }
 
-impl<T> Channel<T>
-{
+impl<T> Channel<T> {
     pub(crate) fn new(buffer_size: usize) -> Arc<Self> {
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
@@ -60,7 +59,9 @@ impl<T> Channel<T>
     }
 }
 
-impl<T> Channel<T> where T: ChannelValue,
+impl<T> Channel<T>
+where
+    T: ChannelValue,
 {
     pub fn send(&self, val: T) -> usize {
         let ring = self.inner.get();
@@ -140,11 +141,11 @@ impl<T> Channel<T> where T: ChannelValue,
         unsafe {
             let (result, result_id) = (*ring)[index];
             if result_id == id {
-                return Ok(result)
+                return Ok(result);
             }
         }
 
-        return Err(ChannelError::IdTooOld)
+        return Err(ChannelError::IdTooOld);
     }
 
     pub fn get_latest(&self) -> Option<(T, usize)> {
@@ -163,10 +164,10 @@ impl<T> Channel<T> where T: ChannelValue,
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld) {
-                return immediate
+                return immediate;
             }
         } else {
-            return immediate
+            return immediate;
         }
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
@@ -178,14 +179,18 @@ impl<T> Channel<T> where T: ChannelValue,
         Ok(self.try_get(id).unwrap())
     }
 
-    pub fn get_blocking_before(&self, id: usize, before: std::time::Instant) -> Result<T, ChannelError> {
+    pub fn get_blocking_before(
+        &self,
+        id: usize,
+        before: std::time::Instant,
+    ) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld) {
-                return immediate
+                return immediate;
             }
         } else {
-            return immediate
+            return immediate;
         }
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
@@ -203,10 +208,10 @@ impl<T> Channel<T> where T: ChannelValue,
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld) {
-                return immediate
+                return immediate;
             }
         } else {
-            return immediate
+            return immediate;
         }
         while self.read_head.load(Ordering::Acquire) < id as i64 {
             let listener = self.event.listen();

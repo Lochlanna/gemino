@@ -1,6 +1,9 @@
 use std::future::Future;
 
-async fn measure<FUT>(name: &str, runs: u32, f: impl Fn()-> FUT) where FUT: Future<Output=()> {
+async fn measure<FUT>(name: &str, runs: u32, f: impl Fn() -> FUT)
+where
+    FUT: Future<Output = ()>,
+{
     let mut average = 0;
     let mut min = u128::MAX;
     let mut max = 0;
@@ -20,13 +23,15 @@ async fn measure<FUT>(name: &str, runs: u32, f: impl Fn()-> FUT) where FUT: Futu
             max = elapsed;
         }
     }
-    println!("bench -> {}: Average {}ns over {} runs. Fastest {}ns - Slowest {}ns", name, average, runs, min, max);
+    println!(
+        "bench -> {}: Average {}ns over {} runs. Fastest {}ns - Slowest {}ns",
+        name, average, runs, min, max
+    );
 }
-
 
 #[tokio::test]
 async fn tokio_broadcast() {
-    measure("tokio::broadcast", 5,async || {
+    measure("tokio::broadcast", 5, async || {
         let num_to_write = 1000;
 
         let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
@@ -38,7 +43,10 @@ async fn tokio_broadcast() {
         let reader = tokio::spawn(async move {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
-                let value = rx.recv().await.expect("got an error from tokio broadcast recv");
+                let value = rx
+                    .recv()
+                    .await
+                    .expect("got an error from tokio broadcast recv");
                 results.push(value);
             }
             results
@@ -47,15 +55,16 @@ async fn tokio_broadcast() {
         assert!(results.is_ok());
         let results = results.unwrap();
         assert_eq!(results.len(), num_to_write);
-    }).await;
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn wormhole() {
-    measure("wormhole::Broadcast", 5,async || {
+    measure("wormhole::Broadcast", 5, async || {
         let num_to_write = 1000;
 
-        let (tx, mut rx) = crate::channel(num_to_write + 10);
+        let (tx, mut rx) = wormhole::channel(num_to_write + 10);
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
                 tx.send(i);
@@ -64,7 +73,10 @@ async fn wormhole() {
         let reader = tokio::spawn(async move {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
-                let value = rx.async_recv().await.expect("got an error from wormhole recv");
+                let value = rx
+                    .async_recv()
+                    .await
+                    .expect("got an error from wormhole recv");
                 results.push(value);
             }
             results
@@ -73,12 +85,13 @@ async fn wormhole() {
         assert!(results.is_ok());
         let results = results.unwrap();
         assert_eq!(results.len(), num_to_write);
-    }).await;
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn tokio_broadcast_multi_reader() {
-    measure("tokio::Broadcast - multi reader", 5,async || {
+    measure("tokio::Broadcast - multi reader", 5, async || {
         let num_to_write = 1000;
 
         let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
@@ -99,7 +112,10 @@ async fn tokio_broadcast_multi_reader() {
         let reader_b = tokio::spawn(async move {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
-                let value = rx_clone.recv().await.expect("got an error from wormhole recv");
+                let value = rx_clone
+                    .recv()
+                    .await
+                    .expect("got an error from wormhole recv");
                 results.push(value);
             }
             results
@@ -111,15 +127,16 @@ async fn tokio_broadcast_multi_reader() {
         let results_b = results_b.unwrap();
         assert_eq!(results_a.len(), num_to_write);
         assert_eq!(results_b.len(), num_to_write);
-    }).await;
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn wormhole_multi_reader() {
-    measure("wormhole::Broadcast - multi reader", 5,async || {
+    measure("wormhole::Broadcast - multi reader", 5, async || {
         let num_to_write = 1000;
 
-        let (tx, mut rx) = crate::channel(num_to_write + 10);
+        let (tx, mut rx) = wormhole::channel(num_to_write + 10);
         let mut rx_clone = rx.clone();
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
@@ -129,7 +146,10 @@ async fn wormhole_multi_reader() {
         let reader_a = tokio::spawn(async move {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
-                let value = rx.async_recv().await.expect("got an error from wormhole recv");
+                let value = rx
+                    .async_recv()
+                    .await
+                    .expect("got an error from wormhole recv");
                 results.push(value);
             }
             results
@@ -137,7 +157,10 @@ async fn wormhole_multi_reader() {
         let reader_b = tokio::spawn(async move {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
-                let value = rx_clone.async_recv().await.expect("got an error from wormhole recv");
+                let value = rx_clone
+                    .async_recv()
+                    .await
+                    .expect("got an error from wormhole recv");
                 results.push(value);
             }
             results
@@ -149,5 +172,6 @@ async fn wormhole_multi_reader() {
         let results_b = results_b.unwrap();
         assert_eq!(results_a.len(), num_to_write);
         assert_eq!(results_b.len(), num_to_write);
-    }).await;
+    })
+    .await;
 }
