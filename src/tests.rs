@@ -7,7 +7,7 @@ use log::warn;
 use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
-use crate::mpmc_broadcast::{BroadcastReceiver, BroadcastSender, ReceiverError};
+use crate::{BroadcastReceiver, BroadcastSender, ReceiverError};
 
 fn read_sequential<T: ChannelValue + Sync>(
     mut consume: BroadcastReceiver<T>,
@@ -83,7 +83,7 @@ fn sequential_read_write() {
 #[test]
 fn simultaneous_read_write_no_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = mpmc_broadcast::channel(20);
+    let (producer, consumer) = crate::channel(20);
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -94,7 +94,7 @@ fn simultaneous_read_write_no_overwrite() {
 #[test]
 fn simultaneous_read_write_with_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = mpmc_broadcast::channel(3);
+    let (producer, consumer) = crate::channel(3);
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -105,7 +105,7 @@ fn simultaneous_read_write_with_overwrite() {
 #[test]
 fn simultaneous_read_write_multiple_reader() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = mpmc_broadcast::channel(20);
+    let (producer, consumer) = crate::channel(20);
     let reader_a = read_sequential(consumer.clone(), 0, test_input.len() - 1, Duration::zero());
     let reader_b = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));

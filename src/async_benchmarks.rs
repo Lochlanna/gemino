@@ -55,7 +55,7 @@ async fn wormhole() {
     measure("wormhole::Broadcast", 5,async || {
         let num_to_write = 1000;
 
-        let (tx, mut rx) = crate::mpmc_broadcast::channel(num_to_write + 10);
+        let (tx, mut rx) = crate::channel(num_to_write + 10);
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
                 tx.send(i);
@@ -119,7 +119,7 @@ async fn wormhole_multi_reader() {
     measure("wormhole::Broadcast - multi reader", 5,async || {
         let num_to_write = 1000;
 
-        let (tx, mut rx) = crate::mpmc_broadcast::channel(num_to_write + 10);
+        let (tx, mut rx) = crate::channel(num_to_write + 10);
         let mut rx_clone = rx.clone();
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {

@@ -7,8 +7,8 @@ use kanal::bounded as kanal_bounded;
 use chrono::Duration;
 use std::thread::{JoinHandle};
 use std::thread;
-use crate::mpmc_broadcast::BroadcastReceiver;
-use crate::mpmc_broadcast::BroadcastSender;
+use crate::BroadcastReceiver;
+use crate::BroadcastSender;
 
 trait BenchReceiver {
     type Item: ChannelValue;
@@ -124,7 +124,7 @@ fn simultanious_wormhole(b: &mut Bencher) {
     // method of Bencher
     let test_input: Vec<u32> = (0..1000).collect();
     b.iter(|| {
-        let (producer, mut consumer) = crate::mpmc_broadcast::channel(1024);
+        let (producer, mut consumer) = crate::channel(1024);
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
         writer.join().expect("coudln't join writer");

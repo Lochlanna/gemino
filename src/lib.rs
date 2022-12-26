@@ -6,6 +6,7 @@
 
 #[allow(dead_code)]
 mod mpmc_broadcast;
+mod channel;
 
 #[cfg(test)]
 mod async_tests;
@@ -18,229 +19,186 @@ mod parallel_benchmarks;
 #[cfg(test)]
 mod async_benchmarks;
 
-use std::cell::SyncUnsafeCell;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::fmt::{Debug, Formatter, Write};
+use channel::*;
 use std::sync::Arc;
-use std::time::Duration;
-use thiserror::Error;
 
-pub trait ChannelValue: Copy + Send + 'static {}
-
-impl<T> ChannelValue for T where T: Copy + Send + 'static {}
-
-#[derive(Error, Debug)]
-pub enum ChannelError {
-    #[error("channel no longer contains the value")]
-    IdTooOld,
-    #[error("value with the given ID has not yet been written to the channel")]
-    IDNotYetWritten,
-    #[error("operation timed out")]
-    Timeout
+pub struct BroadcastReceiver<T> {
+    inner: Arc<Channel<T>>,
+    next_id: usize,
 }
 
-pub struct Channel<T> {
-    inner: SyncUnsafeCell<Vec<(T, usize)>>,
-    write_head: AtomicUsize,
-    read_head: AtomicI64,
-    capacity: usize,
-    event: event_listener::Event,
+pub enum ReceiverError {
+    Lagged(usize),
+    NoNewData,
 }
 
-impl<T> Channel<T>
+impl ReceiverError {
+    pub fn lagged(&self)->usize {
+        if let ReceiverError::Lagged(missed) = self {
+            return *missed;
+        }
+        0
+    }
+}
+
+impl Debug for ReceiverError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        return match self {
+            ReceiverError::Lagged(_) => f.write_str("receiver is running behind and has missed out on messages"),
+            ReceiverError::NoNewData => f.write_str("no new data in channel"),
+        }
+    }
+}
+
+impl<T> BroadcastReceiver<T> {
+    // This isn't actually unsafe at all.
+    // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
+    // while still enabling explicit weirdness
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+        self.inner
+    }
+}
+
+impl<T> BroadcastReceiver<T>
+    where
+        T: ChannelValue,
 {
-    pub(crate) fn new(buffer_size: usize) -> Arc<Self> {
-        let mut inner = Vec::with_capacity(buffer_size);
-        unsafe {
-            let (raw, _, allocated) = inner.into_raw_parts();
-            inner = Vec::from_raw_parts(raw, allocated, allocated);
+    pub(crate) fn recv(&mut self) -> Result<T, ReceiverError> {
+        let id = self.next_id;
+        match self.inner.get_blocking(id) {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(ReceiverError::Lagged(missed))
+            }
         }
-
-        Arc::new(Self {
-            inner: SyncUnsafeCell::new(inner),
-            write_head: AtomicUsize::new(0),
-            read_head: AtomicI64::new(-1),
-            capacity: buffer_size,
-            event: event_listener::Event::new(),
-        })
     }
 
-    pub fn read_head(&self) -> i64 {
-        self.read_head.load(Ordering::Acquire)
-    }
-
-    pub fn oldest(&self) -> usize {
-        let head = self.write_head.load(Ordering::Acquire);
-        if head < self.capacity {
-            return 0;
+    pub async fn async_recv(&mut self) -> Result<T, ReceiverError> {
+        let id = self.next_id;
+        match self.inner.get(id).await {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(ReceiverError::Lagged(missed))
+            }
         }
-        return (head + self.capacity + 1) % self.capacity;
+    }
+    //TODO how do we deal with missed values in this call?
+    pub fn recv_many(&mut self) -> Vec<T> {
+        let mut result = Vec::new();
+        self.inner.read_batch_from(self.next_id, &mut result);
+        if let Some(value) = result.last() {
+            self.next_id = value.1 + 1;
+        }
+        result.into_iter().map(|(value, _)| value).collect()
     }
 
-    pub fn capacity(&self) -> usize {
-        self.capacity
+    pub fn try_recv(&mut self) -> Result<T, ReceiverError> {
+        let id = self.next_id;
+        match self.inner.try_get(id) {
+            Ok(value) => {
+                self.next_id = self.next_id + 1;
+                Ok(value)
+            }
+            Err(_) => {
+                //lagged
+                self.next_id = self.inner.oldest();
+                let missed = self.next_id - id;
+                Err(ReceiverError::Lagged(missed))
+            }
+        }
+    }
+
+    pub fn latest(&mut self) -> Result<T, ReceiverError> {
+        let (value, id) = self.inner.get_latest().ok_or(ReceiverError::NoNewData)?;
+        if id < self.next_id {
+            return self.recv();
+        }
+        self.next_id = id + 1;
+        Ok(value)
+    }
+
+    pub async fn latest_async(&mut self) -> Result<T, ReceiverError> {
+        let (value, id) = self.inner.get_latest().ok_or(ReceiverError::NoNewData)?;
+        if id < self.next_id {
+            let (value, id) = self.inner.read_next().await;
+            self.next_id = id + 1;
+            return Ok(value);
+        }
+        Ok(value)
     }
 }
 
-impl<T> Channel<T> where T: ChannelValue,
+impl<T> Clone for BroadcastReceiver<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            next_id: self.next_id,
+        }
+    }
+}
+
+impl<T> From<Arc<Channel<T>>> for BroadcastReceiver<T>
 {
-    pub fn send(&self, val: T) -> usize {
-        let ring = self.inner.get();
-
-        let id = self.write_head.fetch_add(1, Ordering::Release);
-        let index = id % self.capacity;
-        unsafe {
-            (*ring)[index] = (val, id);
-        }
-        //spin lock waiting for previous threads to catch up
-        while self
-            .read_head
-            .compare_exchange(
-                id as i64 - 1,
-                id as i64,
-                Ordering::Release,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {}
-        self.event.notify(usize::MAX);
-        id
-    }
-
-    pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
-        let ring = self.inner.get();
-        let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 {
-            return 0;
-        }
-        let safe_head = safe_head as usize;
-        if safe_head < id {
-            return 0;
-        }
-        let start_idx = id % self.capacity;
-        let end_idx = safe_head % self.capacity;
-
-        if start_idx == end_idx {
-            return 0;
-        }
-
-        return if end_idx > start_idx {
-            let num_elements = end_idx - start_idx + 1;
-            result.reserve(num_elements);
-            let res_start = result.len();
-
-            unsafe {
-                result.set_len(res_start + num_elements);
-                let slice_to_copy = &((*ring)[start_idx..(end_idx + 1)]);
-                result[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
-            }
-            num_elements
-        } else {
-            let num_elements = end_idx + (self.capacity - start_idx) + 1;
-            result.reserve(num_elements);
-            let mut res_start = result.len();
-            unsafe {
-                result.set_len(res_start + num_elements);
-                let slice_to_copy = &((*ring)[start_idx..]);
-                result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
-                res_start += slice_to_copy.len();
-                let slice_to_copy = &((*ring)[..end_idx + 1]);
-                result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
-            }
-            num_elements
-        };
-    }
-
-    pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
-        let ring = self.inner.get();
-        let index = id % self.capacity;
-
-        let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 || id > safe_head as usize {
-            return Err(ChannelError::IDNotYetWritten);
-        }
-        unsafe {
-            let (result, result_id) = (*ring)[index];
-            if result_id == id {
-                return Ok(result)
-            }
-        }
-
-        return Err(ChannelError::IdTooOld)
-    }
-
-    pub fn get_latest(&self) -> Option<(T, usize)> {
-        let ring = self.inner.get();
-
-        let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 {
-            return None;
-        }
-        unsafe {
-            return Some((*ring)[safe_head as usize % self.capacity]);
-        }
-    }
-
-    pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
-        let immediate = self.try_get(id);
-        if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld) {
-                return immediate
-            }
-        } else {
-            return immediate
-        }
-        // this is better than a spin...
-        while self.read_head.load(Ordering::Acquire) < id as i64 {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 {
-                listener.wait();
-            }
-        }
-        Ok(self.try_get(id).unwrap())
-    }
-
-    pub fn get_blocking_before(&self, id: usize, before: std::time::Instant) -> Result<T, ChannelError> {
-        let immediate = self.try_get(id);
-        if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld) {
-                return immediate
-            }
-        } else {
-            return immediate
-        }
-        // this is better than a spin...
-        while self.read_head.load(Ordering::Acquire) < id as i64 {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 {
-                if !listener.wait_deadline(before) {
-                    return Err(ChannelError::Timeout);
-                }
-            }
-        }
-        self.try_get(id)
-    }
-
-    pub async fn get(&self, id: usize) -> Result<T, ChannelError> {
-        let immediate = self.try_get(id);
-        if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld) {
-                return immediate
-            }
-        } else {
-            return immediate
-        }
-        while self.read_head.load(Ordering::Acquire) < id as i64 {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 {
-                listener.await;
-            }
-        }
-        Ok(self.try_get(id).unwrap())
-    }
-
-    pub async fn read_next(&self) -> (T, usize) {
-        self.event.listen().await;
-        return self.get_latest().unwrap();
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+        Self { inner: ring_buffer, next_id: 0 }
     }
 }
+
+
+pub struct BroadcastSender<T> {
+    inner: Arc<Channel<T>>
+}
+
+impl<T> BroadcastSender<T> {
+    // This isn't actually unsafe at all.
+    // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
+    // while still enabling explicit weirdness
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+        self.inner
+    }
+}
+
+impl<T> BroadcastSender<T> where T: ChannelValue {
+    pub(crate) fn send(&self, val: T) {
+        self.inner.send(val);
+    }
+}
+
+impl<T> Clone for BroadcastSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone()
+        }
+    }
+}
+
+impl<T> From<Arc<Channel<T>>> for BroadcastSender<T> {
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+        Self {
+            inner: ring_buffer
+        }
+    }
+}
+
+
+pub fn channel<T>(buffer_size:usize) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
+    let chan = Channel::new(buffer_size);
+    let sender = BroadcastSender::from(chan.clone());
+    let receiver = BroadcastReceiver::from(chan);
+    (sender, receiver)
+}
+
 
