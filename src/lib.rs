@@ -5,11 +5,10 @@
 #![feature(async_closure)]
 
 #[allow(dead_code)]
+mod mpmc_broadcast;
 
 #[cfg(test)]
 mod async_tests;
-mod consumer;
-mod producer;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -19,17 +18,15 @@ mod parallel_benchmarks;
 #[cfg(test)]
 mod async_benchmarks;
 
-use consumer::WormholeReceiver;
-use producer::WormholeSender;
 use std::cell::SyncUnsafeCell;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
-pub trait BroadcastValue: Copy + Send + 'static {}
+pub trait ChannelValue: Copy + Send + 'static {}
 
-impl<T> BroadcastValue for T where T: Copy + Send + 'static {}
+impl<T> ChannelValue for T where T: Copy + Send + 'static {}
 
 #[derive(Error, Debug)]
 pub enum ChannelError {
@@ -51,7 +48,7 @@ pub struct Channel<T> {
 
 impl<T> Channel<T>
 {
-    pub fn new(buffer_size: usize) -> Arc<Self> {
+    pub(crate) fn new(buffer_size: usize) -> Arc<Self> {
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
             let (raw, _, allocated) = inner.into_raw_parts();
@@ -66,25 +63,12 @@ impl<T> Channel<T>
             event: event_listener::Event::new(),
         })
     }
-    pub fn split(self: &Arc<Self>) -> (WormholeSender<T>, WormholeReceiver<T>) {
-        let producer = WormholeSender::from(self.clone());
-        let consumer = WormholeReceiver::from(self.clone());
-        (producer, consumer)
-    }
 
-    pub fn consumer(self: &Arc<Self>) -> WormholeReceiver<T> {
-        WormholeReceiver::from(self.clone())
-    }
-
-    pub fn producer(self: &Arc<Self>) -> WormholeSender<T> {
-        WormholeSender::from(self.clone())
-    }
-
-    fn read_head(&self) -> i64 {
+    pub fn read_head(&self) -> i64 {
         self.read_head.load(Ordering::Acquire)
     }
 
-    fn oldest(&self) -> usize {
+    pub fn oldest(&self) -> usize {
         let head = self.write_head.load(Ordering::Acquire);
         if head < self.capacity {
             return 0;
@@ -92,14 +76,14 @@ impl<T> Channel<T>
         return (head + self.capacity + 1) % self.capacity;
     }
 
-    fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.capacity
     }
 }
 
-impl<T> Channel<T> where T: BroadcastValue,
+impl<T> Channel<T> where T: ChannelValue,
 {
-    pub fn send(&self, val: T) {
+    pub fn send(&self, val: T) -> usize {
         let ring = self.inner.get();
 
         let id = self.write_head.fetch_add(1, Ordering::Release);
@@ -118,7 +102,8 @@ impl<T> Channel<T> where T: BroadcastValue,
             )
             .is_err()
         {}
-        self.event.notify(usize::MAX)
+        self.event.notify(usize::MAX);
+        id
     }
 
     pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {

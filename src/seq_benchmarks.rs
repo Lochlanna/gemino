@@ -4,15 +4,13 @@ use super::*;
 use std::sync::mpsc::channel;
 use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;
-use crate::consumer::Receiver;
-use crate::producer::Sender;
 
 #[bench]
 fn sequential_wormhole(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
     b.iter(|| {
-        let (producer, mut consumer) = Channel::new(100).split();
+        let (producer, mut consumer) = mpmc_broadcast::channel(100);
         for i in 0..1000 {
             producer.send(i);
             let v = consumer.recv().expect("couldn't get value");

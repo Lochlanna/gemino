@@ -7,11 +7,10 @@ use log::warn;
 use std::ops::Div;
 use std::thread;
 use std::thread::JoinHandle;
-use crate::consumer::{Receiver, ReceiverError};
-use crate::producer::Sender;
+use crate::mpmc_broadcast::{BroadcastReceiver, BroadcastSender, ReceiverError};
 
-fn read_sequential<T: BroadcastValue>(
-    mut consume: impl Receiver<Error=ReceiverError, Item=T> + Send + 'static,
+fn read_sequential<T: ChannelValue + Sync>(
+    mut consume: BroadcastReceiver<T>,
     starting_at: usize,
     until: usize,
     or_time: Duration,
@@ -42,8 +41,8 @@ fn read_sequential<T: BroadcastValue>(
     jh
 }
 
-fn write_all<T: BroadcastValue>(
-    produce: impl Sender<Item=T> + Send + 'static,
+fn write_all<T: ChannelValue + Sync>(
+    produce: BroadcastSender<T>,
     from: &Vec<T>,
     at_rate_of: i32,
     per: Duration,
@@ -69,22 +68,22 @@ fn write_all<T: BroadcastValue>(
 
 #[test]
 fn sequential_read_write() {
-    let wormhole = Channel::new(2);
-    wormhole.send(42);
-    wormhole.send(21);
-    assert_eq!(wormhole.try_get(0).expect("no value"), 42);
-    assert_eq!(wormhole.try_get(1).expect("no value"), 21);
-    assert_eq!(wormhole.get_latest().expect("no value"), (21, 1));
-    wormhole.send(12);
-    assert_eq!(wormhole.get_latest().expect("no value"), (12, 2));
-    assert!(wormhole.try_get(0).is_err());
-    assert_eq!(wormhole.try_get(2).expect("no value"), 12);
+    let chan = Channel::new(2);
+    chan.send(42);
+    chan.send(21);
+    assert_eq!(chan.try_get(0).expect("no value"), 42);
+    assert_eq!(chan.try_get(1).expect("no value"), 21);
+    assert_eq!(chan.get_latest().expect("no value"), (21, 1));
+    chan.send(12);
+    assert_eq!(chan.get_latest().expect("no value"), (12, 2));
+    assert!(chan.try_get(0).is_err());
+    assert_eq!(chan.try_get(2).expect("no value"), 12);
 }
 
 #[test]
 fn simultaneous_read_write_no_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = Channel::new(20).split();
+    let (producer, consumer) = mpmc_broadcast::channel(20);
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -95,7 +94,7 @@ fn simultaneous_read_write_no_overwrite() {
 #[test]
 fn simultaneous_read_write_with_overwrite() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = Channel::new(3).split();
+    let (producer, consumer) = mpmc_broadcast::channel(3);
     let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
     writer.join().expect("join of writer failed");
@@ -106,7 +105,7 @@ fn simultaneous_read_write_with_overwrite() {
 #[test]
 fn simultaneous_read_write_multiple_reader() {
     let test_input: Vec<u64> = (0..10).collect();
-    let (producer, consumer) = Channel::new(20).split();
+    let (producer, consumer) = mpmc_broadcast::channel(20);
     let reader_a = read_sequential(consumer.clone(), 0, test_input.len() - 1, Duration::zero());
     let reader_b = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
     let writer = write_all(producer, &test_input, 1, Duration::milliseconds(1));
@@ -119,10 +118,10 @@ fn simultaneous_read_write_multiple_reader() {
 
 #[test]
 fn seq_read_write_many() {
-    let wormhole = Channel::new(100);
+    let chan = Channel::new(100);
     for i in 0..1000 {
-        wormhole.send(i);
-        let v = wormhole.try_get(i).expect("couldn't get value");
+        chan.send(i);
+        let v = chan.try_get(i).expect("couldn't get value");
         assert_eq!(v, i);
     }
 }

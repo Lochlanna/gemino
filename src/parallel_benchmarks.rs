@@ -7,20 +7,20 @@ use kanal::bounded as kanal_bounded;
 use chrono::Duration;
 use std::thread::{JoinHandle};
 use std::thread;
-use crate::consumer::Receiver;
-use crate::producer::Sender;
+use crate::mpmc_broadcast::BroadcastReceiver;
+use crate::mpmc_broadcast::BroadcastSender;
 
 trait BenchReceiver {
-    type Item: BroadcastValue;
+    type Item: ChannelValue;
     fn bench_recv(&mut self) -> Self::Item;
 }
 
 trait BenchSender {
-    type Item: BroadcastValue;
+    type Item: ChannelValue;
     fn bench_send(&self, v: Self::Item);
 }
 
-impl<T> BenchReceiver for WormholeReceiver<T> where T: BroadcastValue {
+impl<T> BenchReceiver for BroadcastReceiver<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -28,7 +28,7 @@ impl<T> BenchReceiver for WormholeReceiver<T> where T: BroadcastValue {
     }
 }
 
-impl<T> BenchSender for WormholeSender<T> where T: BroadcastValue {
+impl<T> BenchSender for BroadcastSender<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -36,7 +36,7 @@ impl<T> BenchSender for WormholeSender<T> where T: BroadcastValue {
     }
 }
 
-impl<T> BenchReceiver for kanal::Receiver<T> where T: BroadcastValue {
+impl<T> BenchReceiver for kanal::Receiver<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -44,7 +44,7 @@ impl<T> BenchReceiver for kanal::Receiver<T> where T: BroadcastValue {
     }
 }
 
-impl<T> BenchSender for kanal::Sender<T> where T: BroadcastValue {
+impl<T> BenchSender for kanal::Sender<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -53,7 +53,7 @@ impl<T> BenchSender for kanal::Sender<T> where T: BroadcastValue {
 }
 
 
-impl<T> BenchReceiver for std::sync::mpsc::Receiver<T> where T: BroadcastValue {
+impl<T> BenchReceiver for std::sync::mpsc::Receiver<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -61,7 +61,7 @@ impl<T> BenchReceiver for std::sync::mpsc::Receiver<T> where T: BroadcastValue {
     }
 }
 
-impl<T> BenchSender for std::sync::mpsc::Sender<T> where T: BroadcastValue {
+impl<T> BenchSender for std::sync::mpsc::Sender<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -69,7 +69,7 @@ impl<T> BenchSender for std::sync::mpsc::Sender<T> where T: BroadcastValue {
     }
 }
 
-impl<T> BenchReceiver for crossbeam_channel::Receiver<T> where T: BroadcastValue {
+impl<T> BenchReceiver for crossbeam_channel::Receiver<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_recv(&mut self) -> Self::Item {
@@ -77,7 +77,7 @@ impl<T> BenchReceiver for crossbeam_channel::Receiver<T> where T: BroadcastValue
     }
 }
 
-impl<T> BenchSender for crossbeam_channel::Sender<T> where T: BroadcastValue {
+impl<T> BenchSender for crossbeam_channel::Sender<T> where T: ChannelValue {
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
@@ -124,7 +124,7 @@ fn simultanious_wormhole(b: &mut Bencher) {
     // method of Bencher
     let test_input: Vec<u32> = (0..1000).collect();
     b.iter(|| {
-        let (producer, mut consumer) = Channel::new(1024).split();
+        let (producer, mut consumer) = crate::mpmc_broadcast::channel(1024);
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
         writer.join().expect("coudln't join writer");

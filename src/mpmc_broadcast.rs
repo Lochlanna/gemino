@@ -1,15 +1,8 @@
 use std::fmt::{Debug, Formatter, Write};
 use crate::*;
-#[allow(dead_code)]
 use std::sync::Arc;
 
-pub trait Receiver {
-    type Item;
-    type Error;
-    fn recv(&mut self) -> Result<Self::Item, Self::Error>;
-}
-
-pub struct WormholeReceiver<T> {
+pub struct BroadcastReceiver<T> {
     inner: Arc<Channel<T>>,
     next_id: usize,
 }
@@ -37,7 +30,7 @@ impl Debug for ReceiverError {
     }
 }
 
-impl<T> WormholeReceiver<T> {
+impl<T> BroadcastReceiver<T> {
     // This isn't actually unsafe at all.
     // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
     // while still enabling explicit weirdness
@@ -46,11 +39,11 @@ impl<T> WormholeReceiver<T> {
     }
 }
 
-impl<T> Receiver for WormholeReceiver<T> where T: BroadcastValue {
-    type Item = T;
-    type Error = ReceiverError;
-
-    fn recv(&mut self) -> Result<Self::Item, Self::Error> {
+impl<T> BroadcastReceiver<T>
+    where
+        T: ChannelValue,
+{
+    pub(crate) fn recv(&mut self) -> Result<T, ReceiverError> {
         let id = self.next_id;
         match self.inner.get_blocking(id) {
             Ok(value) => {
@@ -65,12 +58,7 @@ impl<T> Receiver for WormholeReceiver<T> where T: BroadcastValue {
             }
         }
     }
-}
 
-impl<T> WormholeReceiver<T>
-where
-    T: BroadcastValue,
-{
     pub async fn async_recv(&mut self) -> Result<T, ReceiverError> {
         let id = self.next_id;
         match self.inner.get(id).await {
@@ -132,7 +120,7 @@ where
     }
 }
 
-impl<T> Clone for WormholeReceiver<T> {
+impl<T> Clone for BroadcastReceiver<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -141,9 +129,53 @@ impl<T> Clone for WormholeReceiver<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for WormholeReceiver<T>
+impl<T> From<Arc<Channel<T>>> for BroadcastReceiver<T>
 {
     fn from(ring_buffer: Arc<Channel<T>>) -> Self {
         Self { inner: ring_buffer, next_id: 0 }
     }
+}
+
+
+pub struct BroadcastSender<T> {
+    inner: Arc<Channel<T>>
+}
+
+impl<T> BroadcastSender<T> {
+    // This isn't actually unsafe at all.
+    // If you're using seperated producers and consumers there's probably a reason though so this helps to enforce that
+    // while still enabling explicit weirdness
+    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+        self.inner
+    }
+}
+
+impl<T> BroadcastSender<T> where T: ChannelValue {
+    pub(crate) fn send(&self, val: T) {
+        self.inner.send(val);
+    }
+}
+
+impl<T> Clone for BroadcastSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone()
+        }
+    }
+}
+
+impl<T> From<Arc<Channel<T>>> for BroadcastSender<T> {
+    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+        Self {
+            inner: ring_buffer
+        }
+    }
+}
+
+
+pub fn channel<T>(buffer_size:usize) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
+    let chan = Channel::new(buffer_size);
+    let sender = BroadcastSender::from(chan.clone());
+    let receiver = BroadcastReceiver::from(chan);
+    (sender, receiver)
 }
