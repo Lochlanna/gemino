@@ -27,9 +27,7 @@ use thiserror::Error;
 
 pub use channel::ChannelValue;
 
-/// A receiver retrieves messages from the channel in order.
-/// If it is running behind an error will be returned and it will skip
-/// ahead to the oldest value in the channel
+/// A receiver retrieves messages from the channel in the order they were sent
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
     next_id: usize,
@@ -39,7 +37,7 @@ pub struct Receiver<T> {
 pub enum Error {
     #[error("The receiver has lagged behind and missed {0} messages")]
     Lagged(usize),
-    #[error("There is no new data to retreive from the channel")]
+    #[error("There is no new data to retrieve from the channel")]
     NoNewData,
     #[error("channel buffer size must be at least 1")]
     BufferTooSmall,
@@ -67,6 +65,33 @@ impl<T> Receiver<T> {
     /// ```
     pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
         self.inner
+    }
+
+    /// Reset the internal position counter to zero. This means that on the next call to receive it
+    /// will get either the oldest value on the channel or an id too old error and skip forward to the
+    /// oldest value for the next call to receive.
+    ///
+    /// This is useful for when you need another receiver handle and want to get the previous history of
+    /// messages.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42);
+    /// let v = rx.recv().expect("Couldn't receive from channel");
+    /// assert_eq!(v, 42);
+    /// tx.send(72);
+    /// let mut rxb = rx.clone().reset();
+    /// let va = rx.recv().expect("Couldn't receive from channel");
+    /// let vb = rxb.recv().expect("Couldn't receive from channel");
+    /// assert_eq!(va, 72);
+    /// assert_eq!(vb, 42);
+    /// ```
+    pub fn reset(mut self) -> Self {
+        self.next_id = 0;
+        self
     }
 }
 
@@ -111,7 +136,7 @@ where
     ///
     /// # Errors
     /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
-    /// The receiver has skipped forward to the oldest avaialble value in the channel and the number of missed messages is returned
+    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
     /// in the error
     ///
     /// # Example
@@ -288,6 +313,7 @@ impl<T> From<Arc<Channel<T>>> for Receiver<T> {
     }
 }
 
+/// A sender puts new messages onto the channel
 pub struct Sender<T> {
     inner: Arc<Channel<T>>,
 }
