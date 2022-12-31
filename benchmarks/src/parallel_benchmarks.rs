@@ -1,12 +1,12 @@
 extern crate test;
 use crossbeam_channel::{bounded, unbounded};
+use gemino::Receiver;
+use gemino::Sender;
 use kanal::bounded as kanal_bounded;
 use std::sync::mpsc::channel;
 use std::thread;
 use std::thread::JoinHandle;
 use test::Bencher;
-use gemino::Receiver;
-use gemino::Sender;
 
 trait BenchReceiver {
     type Item: gemino::ChannelValue;

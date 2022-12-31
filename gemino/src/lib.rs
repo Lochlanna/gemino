@@ -169,7 +169,6 @@ where
         }
     }
 
-
     /// Reads all new values from the channel into a vector. This function does not block and does
     /// not fail. If there is no new data it does nothing. If there are missed messages the number
     /// of missed messages will be returned. New values are appended to the given vector so it is the

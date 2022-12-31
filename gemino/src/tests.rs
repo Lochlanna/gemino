@@ -131,8 +131,7 @@ fn receive_many() {
     let mut values = Vec::with_capacity(15);
     let missed = consumer.recv_many(&mut values);
     assert_eq!(missed, 7);
-    assert_eq!(vec![7,8,9], values);
-
+    assert_eq!(vec![7, 8, 9], values);
 
     let (producer, mut consumer) = crate::channel(40).expect("couldn't create channel");
     for v in 0..5 {
@@ -140,10 +139,9 @@ fn receive_many() {
     }
     let mut values = Vec::with_capacity(15);
     let missed = consumer.recv_many(&mut values);
-    assert_eq!(vec![0,1,2,3,4], values);
+    assert_eq!(vec![0, 1, 2, 3, 4], values);
     assert_eq!(missed, 0);
 }
-
 
 #[test]
 fn oldest() {
@@ -165,7 +163,6 @@ fn oldest() {
     }
     assert_eq!(chan.oldest(), 9);
 }
-
 
 #[test]
 fn id_too_old() {
@@ -189,7 +186,7 @@ fn lagged() {
     let res = rx.recv();
     match res {
         Ok(v) => assert_eq!(v, 0),
-        Err(_) => panic!("expected to get a value back from the channel")
+        Err(_) => panic!("expected to get a value back from the channel"),
     }
     for v in 1..11 {
         tx.send(v);
@@ -205,7 +202,7 @@ fn lagged() {
     let res = rx.recv();
     match res {
         Ok(v) => assert_eq!(v, 8),
-        Err(_) => panic!("expected to get a value back from the channel")
+        Err(_) => panic!("expected to get a value back from the channel"),
     }
 }
 
@@ -215,18 +212,18 @@ fn id_not_written() {
     let res = rx.try_recv();
     match res {
         Ok(_) => panic!("no values are written so this should be an error"),
-        Err(err) => assert!(matches!(err, Error::NoNewData))
+        Err(err) => assert!(matches!(err, Error::NoNewData)),
     }
     tx.send(42);
     let res = rx.try_recv();
     match res {
         Ok(v) => assert_eq!(v, 42),
-        Err(_) => panic!("expecting a value but got an error here")
+        Err(_) => panic!("expecting a value but got an error here"),
     }
     let res = rx.try_recv();
     match res {
         Ok(_) => panic!("no values are written so this should be an error"),
-        Err(err) => assert!(matches!(err, Error::NoNewData))
+        Err(err) => assert!(matches!(err, Error::NoNewData)),
     }
 }
 
@@ -242,11 +239,11 @@ fn no_new_data() {
     }
 }
 
-
 #[test]
 fn get_timeout() {
     let chan = Channel::<u8>::new(50).expect("couldn't create channel");
-    let res = chan.get_blocking_before(40, Instant::now().add(core::time::Duration::from_millis(5)));
+    let res =
+        chan.get_blocking_before(40, Instant::now().add(core::time::Duration::from_millis(5)));
     match res {
         Ok(_) => panic!("expected failure as this value should have been overwritten"),
         Err(err) => {
@@ -254,7 +251,6 @@ fn get_timeout() {
         }
     }
 }
-
 
 #[test]
 fn buffer_too_small() {
@@ -267,7 +263,6 @@ fn buffer_too_small() {
     }
 }
 
-
 #[test]
 fn capacity() {
     let chan = Channel::<u8>::new(8).expect("coudln't create channel");
@@ -279,5 +274,3 @@ fn capacity() {
     chan.read_batch_from(0, &mut results);
     assert_eq!(results.len(), 8);
 }
-
-

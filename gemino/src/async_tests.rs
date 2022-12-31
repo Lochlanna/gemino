@@ -35,12 +35,18 @@ async fn wait_for_next() {
 async fn get_latest_async() {
     let (tx, mut rx) = channel(2).expect("couldn't create channel");
     tx.send(42);
-    let v = rx.latest_async().await.expect("Couldn't receive latest from channel");
+    let v = rx
+        .latest_async()
+        .await
+        .expect("Couldn't receive latest from channel");
     assert_eq!(v, 42);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs_f32(0.02)).await;
         tx.send(72);
     });
-    let v = rx.latest_async().await.expect("Couldn't receive latest from channel");
+    let v = rx
+        .latest_async()
+        .await
+        .expect("Couldn't receive latest from channel");
     assert_eq!(v, 72);
 }

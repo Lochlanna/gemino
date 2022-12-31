@@ -17,7 +17,7 @@ pub enum ChannelError {
     #[error("operation timed out")]
     Timeout,
     #[error("channel buffer size must be at least 1")]
-    BufferTooSmall
+    BufferTooSmall,
 }
 
 #[derive(Debug)]
@@ -32,7 +32,7 @@ pub struct Channel<T> {
 impl<T> Channel<T> {
     pub(crate) fn new(buffer_size: usize) -> Result<Arc<Self>, ChannelError> {
         if buffer_size < 1 {
-            return Err(ChannelError::BufferTooSmall)
+            return Err(ChannelError::BufferTooSmall);
         }
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
@@ -61,7 +61,6 @@ impl<T> Channel<T> {
             head - self.capacity
         }
     }
-
 
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -104,11 +103,11 @@ where
 
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 {
-            return (0,0);
+            return (0, 0);
         }
         let safe_head = safe_head as usize;
         if safe_head < id {
-            return (0,0);
+            return (0, 0);
         }
         let start_idx = id % self.capacity;
         let mut end_idx = safe_head % self.capacity;
@@ -160,7 +159,6 @@ where
         let result;
         unsafe {
             result = (*ring)[index];
-
         }
         Ok(result)
     }
@@ -173,7 +171,10 @@ where
             return None;
         }
         unsafe {
-            Some(((*ring)[safe_head as usize % self.capacity], safe_head as usize))
+            Some((
+                (*ring)[safe_head as usize % self.capacity],
+                safe_head as usize,
+            ))
         }
     }
 
@@ -213,7 +214,8 @@ where
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
             let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 && !listener.wait_deadline(before) {
+            if self.read_head.load(Ordering::Acquire) < id as i64 && !listener.wait_deadline(before)
+            {
                 return Err(ChannelError::Timeout);
             }
         }
