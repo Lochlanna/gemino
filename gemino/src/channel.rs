@@ -55,11 +55,11 @@ impl<T> Channel<T> {
 
     pub fn oldest(&self) -> usize {
         let head = self.write_head.load(Ordering::Acquire);
-        return if head < self.capacity {
+        if head < self.capacity {
             0
         } else {
             head - self.capacity
-        };
+        }
     }
 
 
@@ -173,7 +173,7 @@ where
             return None;
         }
         unsafe {
-            return Some(((*ring)[safe_head as usize % self.capacity], safe_head as usize));
+            Some(((*ring)[safe_head as usize % self.capacity], safe_head as usize))
         }
     }
 
@@ -213,10 +213,8 @@ where
         // this is better than a spin...
         while self.read_head.load(Ordering::Acquire) < id as i64 {
             let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 {
-                if !listener.wait_deadline(before) {
-                    return Err(ChannelError::Timeout);
-                }
+            if self.read_head.load(Ordering::Acquire) < id as i64 && !listener.wait_deadline(before) {
+                return Err(ChannelError::Timeout);
             }
         }
         self.try_get(id)
@@ -242,6 +240,6 @@ where
 
     pub async fn read_next(&self) -> (T, usize) {
         self.event.listen().await;
-        return self.get_latest().unwrap();
+        self.get_latest().unwrap()
     }
 }

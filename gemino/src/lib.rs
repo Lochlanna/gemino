@@ -46,7 +46,8 @@ pub enum Error {
 }
 
 impl<T> Receiver<T> {
-    /// This function is not actually unsafe it's just not the recommended way to use the channel
+    /// Returns a copy of the pointer to the underlying channel implementation. This is safe although
+    /// not a recommended way to use the channel
     ///
     /// # Example
     ///
@@ -65,7 +66,7 @@ impl<T> Receiver<T> {
     /// # });
     ///
     /// ```
-    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+    pub fn to_inner(self) -> Arc<Channel<T>> {
         self.inner
     }
 
@@ -122,7 +123,7 @@ where
         let id = self.next_id;
         match self.inner.get_blocking(id) {
             Ok(value) => {
-                self.next_id = self.next_id + 1;
+                self.next_id += 1;
                 Ok(value)
             }
             Err(_) => {
@@ -156,7 +157,7 @@ where
         let id = self.next_id;
         match self.inner.get(id).await {
             Ok(value) => {
-                self.next_id = self.next_id + 1;
+                self.next_id += 1;
                 Ok(value)
             }
             Err(_) => {
@@ -229,7 +230,7 @@ where
         let id = self.next_id;
         match self.inner.try_get(id) {
             Ok(value) => {
-                self.next_id = self.next_id + 1;
+                self.next_id += 1;
                 Ok(value)
             }
             Err(err) => {
@@ -346,10 +347,8 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// This function is not actually unsafe it's just not the recommended way to use the channel
-    ///
-    /// # Errors
-    /// - `Error::BufferTooSmall`
+    /// Returns a copy of the pointer to the underlying channel implementation. This is safe although
+    /// not a recommended way to use the channel
     ///
     /// # Example
     ///
@@ -368,7 +367,7 @@ impl<T> Sender<T> {
     /// # });
     ///
     /// ```
-    pub unsafe fn to_inner(self) -> Arc<Channel<T>> {
+    pub fn to_inner(self) -> Arc<Channel<T>> {
         self.inner
     }
 }
