@@ -1,4 +1,5 @@
 use std::cell::SyncUnsafeCell;
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -19,8 +20,9 @@ pub enum ChannelError {
     BufferTooSmall
 }
 
+#[derive(Debug)]
 pub struct Channel<T> {
-    inner: SyncUnsafeCell<Vec<(T, usize)>>,
+    inner: SyncUnsafeCell<Vec<T>>,
     write_head: AtomicUsize,
     read_head: AtomicI64,
     capacity: usize,
@@ -53,11 +55,13 @@ impl<T> Channel<T> {
 
     pub fn oldest(&self) -> usize {
         let head = self.write_head.load(Ordering::Acquire);
-        if head < self.capacity {
-            return 0;
-        }
-        return (head + self.capacity + 1) % self.capacity;
+        return if head < self.capacity {
+            0
+        } else {
+            head - self.capacity
+        };
     }
+
 
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -74,7 +78,7 @@ where
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
         unsafe {
-            (*ring)[index] = (val, id);
+            (*ring)[index] = val;
         }
         //spin lock waiting for previous threads to catch up
         while self
@@ -91,34 +95,38 @@ where
         id
     }
 
-    pub fn read_batch_from(&self, id: usize, result: &mut Vec<(T, usize)>) -> usize {
+    pub fn read_batch_from(&self, mut id: usize, result: &mut Vec<T>) -> (usize, usize) {
         let ring = self.inner.get();
+        let first_element_id = self.oldest();
+        if id < first_element_id {
+            id = first_element_id
+        }
+
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 {
-            return 0;
+            return (0,0);
         }
         let safe_head = safe_head as usize;
         if safe_head < id {
-            return 0;
+            return (0,0);
         }
         let start_idx = id % self.capacity;
-        let end_idx = safe_head % self.capacity;
+        let mut end_idx = safe_head % self.capacity;
 
         if start_idx == end_idx {
-            return 0;
+            // this means that it will end up getting the value at start_idx only
+            end_idx += 1;
         }
 
-        return if end_idx > start_idx {
+        if end_idx > start_idx {
             let num_elements = end_idx - start_idx + 1;
             result.reserve(num_elements);
             let res_start = result.len();
-
             unsafe {
                 result.set_len(res_start + num_elements);
                 let slice_to_copy = &((*ring)[start_idx..(end_idx + 1)]);
                 result[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
             }
-            num_elements
         } else {
             let num_elements = end_idx + (self.capacity - start_idx) + 1;
             result.reserve(num_elements);
@@ -131,26 +139,30 @@ where
                 let slice_to_copy = &((*ring)[..end_idx + 1]);
                 result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
             }
-            num_elements
-        };
+        }
+        (id, safe_head)
     }
 
     pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         let ring = self.inner.get();
         let index = id % self.capacity;
 
+        let start_id = self.oldest();
+        if id < start_id {
+            return Err(ChannelError::IdTooOld(start_id));
+        }
+
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 || id > safe_head as usize {
             return Err(ChannelError::IDNotYetWritten);
         }
-        unsafe {
-            let (result, result_id) = (*ring)[index];
-            if result_id == id {
-                return Ok(result);
-            }
-        }
 
-        return Err(ChannelError::IdTooOld(self.oldest()));
+        let result;
+        unsafe {
+            result = (*ring)[index];
+
+        }
+        Ok(result)
     }
 
     pub fn get_latest(&self) -> Option<(T, usize)> {
@@ -161,7 +173,7 @@ where
             return None;
         }
         unsafe {
-            return Some((*ring)[safe_head as usize % self.capacity]);
+            return Some(((*ring)[safe_head as usize % self.capacity], safe_head as usize));
         }
     }
 

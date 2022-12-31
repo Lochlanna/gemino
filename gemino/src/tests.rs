@@ -2,9 +2,10 @@ use super::*;
 use crate::{Error, Receiver, Sender};
 use chrono::Duration;
 use log::warn;
-use std::ops::Div;
+use std::ops::{Add, Div};
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 fn read_sequential<T: ChannelValue + Sync>(
     mut consume: Receiver<T>,
@@ -119,6 +120,164 @@ fn seq_read_write_many() {
         let v = chan.try_get(i).expect("couldn't get value");
         assert_eq!(v, i);
     }
+}
+
+#[test]
+fn receive_many() {
+    let (producer, mut consumer) = crate::channel(3).expect("couldn't create channel");
+    for v in 0..10 {
+        producer.send(v);
+    }
+    let mut values = Vec::with_capacity(15);
+    let missed = consumer.recv_many(&mut values);
+    assert_eq!(missed, 7);
+    assert_eq!(vec![7,8,9], values);
+
+
+    let (producer, mut consumer) = crate::channel(40).expect("couldn't create channel");
+    for v in 0..5 {
+        producer.send(v);
+    }
+    let mut values = Vec::with_capacity(15);
+    let missed = consumer.recv_many(&mut values);
+    assert_eq!(vec![0,1,2,3,4], values);
+    assert_eq!(missed, 0);
+}
+
+
+#[test]
+fn oldest() {
+    let chan = Channel::new(3).expect("couldn't create channel");
+    for v in 0..10 {
+        chan.send(v);
+    }
+    assert_eq!(chan.oldest(), 7);
+
+    let chan = Channel::new(12).expect("couldn't create channel");
+    for v in 0..10 {
+        chan.send(v);
+    }
+    assert_eq!(chan.oldest(), 0);
+
+    let chan = Channel::new(1).expect("couldn't create channel");
+    for v in 0..10 {
+        chan.send(v);
+    }
+    assert_eq!(chan.oldest(), 9);
+}
+
+
+#[test]
+fn id_too_old() {
+    let chan = Channel::new(3).expect("couldn't create channel");
+    for v in 0..10 {
+        chan.send(v);
+    }
+    let res = chan.try_get(0);
+    match res {
+        Ok(_) => panic!("expected failure as this value should have been overwritten"),
+        Err(err) => {
+            assert!(matches!(err, ChannelError::IdTooOld(7)));
+        }
+    }
+}
+
+#[test]
+fn lagged() {
+    let (tx, mut rx) = crate::channel(3).expect("couldn't create channel");
+    tx.send(0);
+    let res = rx.recv();
+    match res {
+        Ok(v) => assert_eq!(v, 0),
+        Err(_) => panic!("expected to get a value back from the channel")
+    }
+    for v in 1..11 {
+        tx.send(v);
+    }
+    let res = rx.recv();
+    match res {
+        Ok(_) => panic!("expected failure as this value should have been overwritten"),
+        Err(err) => {
+            assert!(matches!(err, Error::Lagged(7)));
+        }
+    }
+
+    let res = rx.recv();
+    match res {
+        Ok(v) => assert_eq!(v, 8),
+        Err(_) => panic!("expected to get a value back from the channel")
+    }
+}
+
+#[test]
+fn id_not_written() {
+    let (tx, mut rx) = crate::channel::<u8>(3).expect("couldn't create channel");
+    let res = rx.try_recv();
+    match res {
+        Ok(_) => panic!("no values are written so this should be an error"),
+        Err(err) => assert!(matches!(err, Error::NoNewData))
+    }
+    tx.send(42);
+    let res = rx.try_recv();
+    match res {
+        Ok(v) => assert_eq!(v, 42),
+        Err(_) => panic!("expecting a value but got an error here")
+    }
+    let res = rx.try_recv();
+    match res {
+        Ok(_) => panic!("no values are written so this should be an error"),
+        Err(err) => assert!(matches!(err, Error::NoNewData))
+    }
+}
+
+#[test]
+fn no_new_data() {
+    let chan = Channel::<u8>::new(50).expect("couldn't create channel");
+    let res = chan.try_get(40);
+    match res {
+        Ok(_) => panic!("expected failure as this value should have been overwritten"),
+        Err(err) => {
+            assert!(matches!(err, ChannelError::IDNotYetWritten));
+        }
+    }
+}
+
+
+#[test]
+fn get_timeout() {
+    let chan = Channel::<u8>::new(50).expect("couldn't create channel");
+    let res = chan.get_blocking_before(40, Instant::now().add(core::time::Duration::from_millis(5)));
+    match res {
+        Ok(_) => panic!("expected failure as this value should have been overwritten"),
+        Err(err) => {
+            assert!(matches!(err, ChannelError::Timeout));
+        }
+    }
+}
+
+
+#[test]
+fn buffer_too_small() {
+    let chan = Channel::<u8>::new(0);
+    match chan {
+        Ok(_) => panic!("expected failure as this value should have been overwritten"),
+        Err(err) => {
+            assert!(matches!(err, ChannelError::BufferTooSmall));
+        }
+    }
+}
+
+
+#[test]
+fn capacity() {
+    let chan = Channel::<u8>::new(8).expect("coudln't create channel");
+    assert_eq!(chan.capacity(), 8);
+    for i in 0..10 {
+        chan.send(i);
+    }
+    let mut results = Vec::new();
+    chan.read_batch_from(0, &mut results);
+    assert_eq!(results.len(), 8);
 }
 
 

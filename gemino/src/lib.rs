@@ -11,6 +11,7 @@
 
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
+#![feature(iter_collect_into)]
 
 #[allow(dead_code)]
 mod channel;
@@ -28,6 +29,7 @@ use thiserror::Error;
 pub use channel::ChannelValue;
 
 /// A receiver retrieves messages from the channel in the order they were sent
+#[derive(Debug)]
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
     next_id: usize,
@@ -103,7 +105,7 @@ where
     /// channel; even if there are no senders. It is probably best to use `[recv_before]`
     ///
     /// # Errors
-    /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
+    /// - `Error::Lagged` The receiver has fallen behind and the next value has already been overwritten.
     /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
     /// in the error
     ///
@@ -135,7 +137,7 @@ where
     /// Asynchronously receives the next value from the channel.
     ///
     /// # Errors
-    /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
+    /// - `Error::Lagged` The receiver has fallen behind and the next value has already been overwritten.
     /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
     /// in the error
     ///
@@ -165,14 +167,17 @@ where
             }
         }
     }
-    //TODO how do we deal with missed values in this call?
-    pub fn recv_many(&mut self) -> Vec<T> {
-        let mut result = Vec::new();
-        self.inner.read_batch_from(self.next_id, &mut result);
-        if let Some(value) = result.last() {
-            self.next_id = value.1 + 1;
+
+
+    pub fn recv_many(&mut self, result: &mut Vec<T>) -> usize {
+        let (first_id, last_id) = self.inner.read_batch_from(self.next_id, result);
+
+        let mut missed = 0;
+        if first_id > self.next_id {
+            missed = first_id - self.next_id
         }
-        result.into_iter().map(|(value, _)| value).collect()
+        self.next_id = last_id + 1;
+        missed
     }
 
     /// Attempt to retrieve the next value from the channel immediately. This function will not block.
@@ -184,10 +189,10 @@ where
     ///
     ///
     /// # Errors
-    /// - `Error::Lagged` -> The receiver has fallen behind and the next value has already been overwritten.
+    /// - `Error::Lagged` The receiver has fallen behind and the next value has already been overwritten.
     /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
     /// in the error
-    /// - `Error::NoNewData` -> There is no new data on the channel to be received
+    /// - `Error::NoNewData` There is no new data on the channel to be received
     ///
     /// # Example
     ///
@@ -229,7 +234,7 @@ where
     ///
     ///
     /// # Errors
-    /// - `Error::NoNewData` -> The channel has not been written to yet
+    /// - `Error::NoNewData` The channel has not been written to yet
     ///
     /// # Example
     ///
@@ -264,7 +269,7 @@ where
     ///
     ///
     /// # Errors
-    /// - `Error::NoNewData` -> The channel has not been written to yet
+    /// - `Error::NoNewData` The channel has not been written to yet
     ///
     /// # Example
     ///
@@ -314,6 +319,7 @@ impl<T> From<Arc<Channel<T>>> for Receiver<T> {
 }
 
 /// A sender puts new messages onto the channel
+#[derive(Debug)]
 pub struct Sender<T> {
     inner: Arc<Channel<T>>,
 }
