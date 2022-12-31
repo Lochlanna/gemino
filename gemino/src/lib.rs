@@ -169,6 +169,27 @@ where
     }
 
 
+    /// Reads all new values from the channel into a vector. This function does not block and does
+    /// not fail. If there is no new data it does nothing. If there are missed messages the number
+    /// of missed messages will be returned. New values are appended to the given vector so it is the
+    /// responsibility of the caller to reset the vector.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// let (tx, mut rx) = channel(2).expect("couldn't create channel");
+    /// tx.send(42); // This will be overwritten because the buffer size is only 2
+    /// tx.send(12);
+    /// tx.send(21);
+    /// let mut results = Vec::new();
+    /// let v = rx.recv_many(&mut results);
+    /// assert_eq!(v, 1); // We missed out on one message
+    /// assert_eq!(vec![12,21], results);
+    /// tx.send(5);
+    /// let v = rx.try_recv().expect("couldn't get a value"); // The receiver is now caught up to the latest value
+    /// assert_eq!(v, 5);
+    /// ```
     pub fn recv_many(&mut self, result: &mut Vec<T>) -> usize {
         let (first_id, last_id) = self.inner.read_batch_from(self.next_id, result);
 
