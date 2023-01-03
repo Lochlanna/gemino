@@ -266,7 +266,7 @@ fn buffer_too_small() {
 
 #[test]
 fn capacity() {
-    let chan = Channel::<u8>::new(8).expect("coudln't create channel");
+    let chan = Channel::<u8>::new(8).expect("couldn't create channel");
     assert_eq!(chan.capacity(), 8);
     for i in 0..10 {
         chan.send(i);

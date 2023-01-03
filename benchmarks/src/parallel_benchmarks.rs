@@ -141,7 +141,7 @@ fn simultanious_gemino(b: &mut Bencher) {
         let (producer, consumer) = gemino::channel(1024).expect("couldn't create channel");
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
-        writer.join().expect("coudln't join writer");
+        writer.join().expect("couldn't join writer");
         reader.join().expect("couldn't get reader results");
     })
 }
@@ -155,7 +155,7 @@ fn simultanious_std_mpsc(b: &mut Bencher) {
         let (producer, consumer) = channel();
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
-        writer.join().expect("coudln't join writer");
+        writer.join().expect("couldn't join writer");
         reader.join().expect("couldn't get reader results");
     })
 }
@@ -169,7 +169,7 @@ fn simultanious_crossbeam_bounded(b: &mut Bencher) {
         let (producer, consumer) = bounded(100);
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
-        writer.join().expect("coudln't join writer");
+        writer.join().expect("couldn't join writer");
         reader.join().expect("couldn't get reader results");
     })
 }
@@ -183,7 +183,7 @@ fn simultanious_crossbeam_unbounded(b: &mut Bencher) {
         let (producer, consumer) = unbounded();
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
-        writer.join().expect("coudln't join writer");
+        writer.join().expect("couldn't join writer");
         reader.join().expect("couldn't get reader results");
     })
 }
@@ -197,7 +197,7 @@ fn simultanious_kanal(b: &mut Bencher) {
         let (producer, consumer) = kanal_bounded(100);
         let reader = read_sequential(consumer, test_input.len() - 1);
         let writer = write_all(producer, &test_input);
-        writer.join().expect("coudln't join writer");
+        writer.join().expect("couldn't join writer");
         reader.join().expect("couldn't get reader results");
     })
 }
