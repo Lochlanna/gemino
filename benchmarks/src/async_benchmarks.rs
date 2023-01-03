@@ -73,7 +73,7 @@ async fn gemino() {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
                 let value = rx
-                    .async_recv()
+                    .recv_async()
                     .await
                     .expect("got an error from gemino recv");
                 results.push(value);
@@ -146,7 +146,7 @@ async fn gemino_multi_reader() {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
                 let value = rx
-                    .async_recv()
+                    .recv_async()
                     .await
                     .expect("got an error from gemino recv");
                 results.push(value);
@@ -157,7 +157,7 @@ async fn gemino_multi_reader() {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
                 let value = rx_clone
-                    .async_recv()
+                    .recv_async()
                     .await
                     .expect("got an error from gemino recv");
                 results.push(value);

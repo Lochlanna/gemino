@@ -46,6 +46,8 @@ pub enum Error {
     /// sent may still be received.
     #[error("the channel has been closed")]
     Closed,
+    #[error("request cannot be filled as the channel capacity is smaller than the requested number of elements")]
+    RequestTooLarge,
 }
 
 /// Retrieves messages from the channel in the order they were sent.
@@ -224,7 +226,7 @@ where
     /// # async fn test()->Result<()> {
     /// let (tx, mut rx) = channel(2)?;
     /// tx.send(42)?;
-    /// let v = rx.async_recv().await?;
+    /// let v = rx.recv_async().await?;
     /// assert_eq!(v, 42);
     /// # Ok(())
     /// # }
@@ -233,7 +235,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn async_recv(&mut self) -> Result<T, Error> {
+    pub async fn recv_async(&mut self) -> Result<T, Error> {
         let id = self.next_id;
         match self.inner.get(id).await {
             Ok(value) => {
@@ -295,6 +297,116 @@ where
                     ChannelError::Closed => Err(Error::Closed),
                     _ => panic!("unexpected error while performing bulk read: {err}"),
                 })?;
+
+        let mut missed = 0;
+        if first_id as usize > self.next_id {
+            missed = first_id as usize - self.next_id
+        }
+        self.next_id = last_id as usize + 1;
+        Ok(missed)
+    }
+
+    /// Reads at least `num` new values from the channel into a vector. Bulk reads are very fast and memory
+    /// efficient as it does a direct memory copy into the target array and only has to do synchronisation
+    /// checks one time. In an environment where there is high write load this will be the best way to
+    /// read from the channel.
+    ///
+    /// This function will block until at least `num` elements are available to read from the channel.
+    ///
+    /// # Errors
+    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
+    /// will also return this error.
+    /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
+    /// - [`Error::RequestTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// # use anyhow::Result;
+    /// # fn main() -> Result<()> {
+    /// let (tx, mut rx) = channel(3)?;
+    /// tx.send(42)?;
+    /// tx.send(12)?;
+    /// tx.send(21)?;
+    /// let mut results = Vec::new();
+    /// let v = rx.recv_at_least(2, &mut results)?;
+    /// assert_eq!(v, 0);
+    /// assert_eq!(vec![42, 12,21], results);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn recv_at_least(&mut self, num: usize, result: &mut Vec<T>) -> Result<usize, Error> {
+        let (first_id, last_id) = self
+            .inner
+            .read_at_least(num, self.next_id, result)
+            .or_else(|err| match err {
+                ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+                ChannelError::Closed => Err(Error::Closed),
+                ChannelError::RequestTooLarge => Err(Error::RequestTooLarge),
+                _ => panic!("unexpected error while performing bulk read: {err}"),
+            })?;
+
+        let mut missed = 0;
+        if first_id as usize > self.next_id {
+            missed = first_id as usize - self.next_id
+        }
+        self.next_id = last_id as usize + 1;
+        Ok(missed)
+    }
+
+    /// Reads at least `num` new values from the channel into a vector. Bulk reads are very fast and memory
+    /// efficient as it does a direct memory copy into the target array and only has to do synchronisation
+    /// checks one time. In an environment where there is high write load this will be the best way to
+    /// read from the channel.
+    ///
+    /// This function will wait until at least `num` elements are available to read from the channel.
+    ///
+    /// # Errors
+    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
+    /// will also return this error.
+    /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
+    /// - [`Error::RequestTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// # use anyhow::Result;
+    /// # use std::time::Duration;
+    /// # async fn test() -> Result<()> {
+    /// let (tx, mut rx) = channel(3)?;
+    /// tx.send(42)?;
+    /// tx.send(12)?;
+    /// let mut results = Vec::new();
+    /// let fail = tokio::time::timeout(Duration::from_millis(5), rx.recv_at_least_async(3, &mut results)).await;
+    /// assert!(fail.is_err()); // timeout because it was waiting for 3 elements on the array
+    /// tx.send(21)?;
+    /// let v = rx.recv_at_least_async(3, &mut results).await?;
+    /// assert_eq!(v, 0);
+    /// assert_eq!(vec![42, 12, 21], results);
+    /// # Ok(())
+    /// # }
+    /// # fn main() -> Result<()> {
+    /// # tokio_test::block_on(test())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn recv_at_least_async(
+        &mut self,
+        num: usize,
+        result: &mut Vec<T>,
+    ) -> Result<usize, Error> {
+        let (first_id, last_id) = self
+            .inner
+            .read_at_least_async(num, self.next_id, result)
+            .await
+            .or_else(|err| match err {
+                ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+                ChannelError::Closed => Err(Error::Closed),
+                ChannelError::RequestTooLarge => Err(Error::RequestTooLarge),
+                _ => panic!("unexpected error while performing bulk read: {err}"),
+            })?;
 
         let mut missed = 0;
         if first_id as usize > self.next_id {
@@ -453,7 +565,7 @@ where
     pub async fn latest_async(&mut self) -> Result<T, Error> {
         let (value, id) = self.try_latest()?;
         if (id as usize) < self.next_id {
-            return self.async_recv().await;
+            return self.recv_async().await;
         }
         self.next_id = id as usize + 1;
         Ok(value)

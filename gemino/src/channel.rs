@@ -21,6 +21,8 @@ pub enum ChannelError {
     Overloaded,
     #[error("channel has been closed")]
     Closed,
+    #[error("cannot request more than buffer size elements at once")]
+    RequestTooLarge,
 }
 
 #[derive(Debug)]
@@ -128,7 +130,7 @@ where
     pub fn read_batch_from(
         &self,
         from_id: usize,
-        result: &mut Vec<T>,
+        into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError> {
         if from_id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
@@ -147,33 +149,28 @@ where
         }
 
         let start_idx = (from_id % self.capacity) as usize;
-        let mut end_idx = (latest_committed_id % self.capacity) as usize;
+        let end_idx = (latest_committed_id % self.capacity) as usize;
 
-        if start_idx == end_idx {
-            // this means that it will end up getting the value at start_idx only
-            end_idx += 1;
-        }
-
-        if end_idx > start_idx {
+        if end_idx >= start_idx {
             let num_elements = end_idx - start_idx + 1;
-            result.reserve(num_elements);
-            let res_start = result.len();
+            into.reserve(num_elements);
+            let res_start = into.len();
             unsafe {
-                result.set_len(res_start + num_elements);
+                into.set_len(res_start + num_elements);
                 let slice_to_copy = &((*self.inner)[start_idx..(end_idx + 1)]);
-                result[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
+                into[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
             }
         } else {
             let num_elements = end_idx + (self.capacity as usize - start_idx) + 1;
-            result.reserve(num_elements);
-            let mut res_start = result.len();
+            into.reserve(num_elements);
+            let mut res_start = into.len();
             unsafe {
-                result.set_len(res_start + num_elements);
+                into.set_len(res_start + num_elements);
                 let slice_to_copy = &((*self.inner)[start_idx..]);
-                result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
+                into[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
                 res_start += slice_to_copy.len();
                 let slice_to_copy = &((*self.inner)[..end_idx + 1]);
-                result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
+                into[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
             }
         }
 
@@ -184,10 +181,59 @@ where
             // we have to invalidate some number of values as they may have been overwritten during the copy
             // this is pretty expensive to do but unavoidable unfortunately
             let num_to_remove = (oldest - from_id) as usize;
-            result.drain(0..num_to_remove);
+            into.drain(0..num_to_remove);
             from_id = oldest;
         }
         Ok((from_id, latest_committed_id))
+    }
+
+    pub fn read_at_least(
+        &self,
+        num: usize,
+        mut from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
+        if num > self.capacity() {
+            return Err(ChannelError::RequestTooLarge);
+        }
+        let original_from = from_id;
+        loop {
+            let listener = self.event.listen();
+            let oldest = self.oldest();
+            if from_id < oldest as usize {
+                from_id = oldest as usize;
+            }
+            let latest = self.read_head.load(Ordering::Acquire);
+            let num_available = (latest as usize) - from_id + 1;
+            if num_available >= num {
+                return self.read_batch_from(original_from, into);
+            }
+            listener.wait();
+        }
+    }
+
+    pub async fn read_at_least_async(
+        &self,
+        num: usize,
+        mut from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
+        if num > self.capacity() {
+            return Err(ChannelError::RequestTooLarge);
+        }
+        loop {
+            let listener = self.event.listen();
+            let oldest = self.oldest();
+            if from_id < oldest as usize {
+                from_id = oldest as usize;
+            }
+            let latest = self.read_head.load(Ordering::Acquire);
+            let num_available = (latest as usize) - from_id + 1;
+            if num_available >= num {
+                return self.read_batch_from(from_id, into);
+            }
+            listener.await;
+        }
     }
 
     pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
