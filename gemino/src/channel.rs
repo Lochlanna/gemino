@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
-pub trait ChannelValue: Copy + Send + 'static {}
+pub trait ChannelValue: Copy + 'static {}
 
-impl<T> ChannelValue for T where T: Copy + Send + 'static {}
+impl<T> ChannelValue for T where T: Copy + 'static {}
 
 #[derive(Error, Debug)]
 pub enum ChannelError {
@@ -14,13 +14,15 @@ pub enum ChannelError {
     IdTooOld(isize),
     #[error("value with the given ID has not yet been written to the channel")]
     IDNotYetWritten,
+    #[error("the given index is invalid. Index's must be between 0 and isize::MAX")]
+    InvalidIndex,
     #[error("operation timed out")]
     Timeout,
     #[error("channel buffer size cannot be zero")]
     BufferTooSmall,
     #[error("channel buffer size cannot exceed isize::MAX")]
     BufferTooBig,
-    #[error("channel is being completly overwritten before a read can take place")]
+    #[error("channel is being completely overwritten before a read can take place")]
     Overloaded,
 }
 
@@ -34,6 +36,7 @@ pub struct Channel<T> {
 }
 
 impl<T> Channel<T> {
+    #[allow(clippy::uninit_vec)]
     pub(crate) fn new(buffer_size: usize) -> Result<Arc<Self>, ChannelError> {
         if buffer_size < 1 {
             return Err(ChannelError::BufferTooSmall);
@@ -41,10 +44,11 @@ impl<T> Channel<T> {
         if buffer_size > isize::MAX as usize {
             return Err(ChannelError::BufferTooBig);
         }
+
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
-            let (raw, _, allocated) = inner.into_raw_parts();
-            inner = Vec::from_raw_parts(raw, allocated, allocated);
+            // We manage the data ourselves
+            inner.set_len(buffer_size);
         }
 
         Ok(Arc::new(Self {
@@ -93,25 +97,30 @@ where
         id
     }
 
-    pub fn read_batch_from(&self, mut id: isize, result: &mut Vec<T>) -> (isize, isize) {
+    pub fn read_batch_from(
+        &self,
+        from_id: usize,
+        result: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
+        if from_id > isize::MAX as usize {
+            return Err(ChannelError::InvalidIndex);
+        }
+        let mut from_id = from_id as isize;
+
         let ring = self.inner.get();
 
-        let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 {
-            return (0, 0);
-        }
-        let safe_head = safe_head;
-        if safe_head < id {
-            return (0, 0);
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < from_id {
+            return Err(ChannelError::IDNotYetWritten);
         }
 
-        let first_element_id = self.oldest();
-        if id < first_element_id {
-            id = first_element_id
+        let oldest = self.oldest();
+        if from_id < oldest {
+            from_id = oldest
         }
 
-        let start_idx = (id % self.capacity) as usize;
-        let mut end_idx = (safe_head % self.capacity) as usize;
+        let start_idx = (from_id % self.capacity) as usize;
+        let mut end_idx = (latest_committed_id % self.capacity) as usize;
 
         if start_idx == end_idx {
             // this means that it will end up getting the value at start_idx only
@@ -143,22 +152,28 @@ where
 
         // We need to ensure that no writers were writing to the same cells we were reading. If they
         // did we invalidate those values.
-        let new_oldest = self.oldest();
-        if id < new_oldest {
+        let oldest = self.oldest();
+        if from_id < oldest {
             // we have to invalidate some number of values as they may have been overwritten during the copy
             // this is pretty expensive to do but unavoidable unfortunately
-            let num_to_remove = (new_oldest - id) as usize;
+            let num_to_remove = (oldest - from_id) as usize;
             result.drain(0..num_to_remove);
+            from_id = oldest;
         }
-        (id, safe_head)
+        Ok((from_id, latest_committed_id))
     }
 
-    pub fn try_get(&self, id: isize) -> Result<T, ChannelError> {
+    pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
+        if id > isize::MAX as usize {
+            return Err(ChannelError::InvalidIndex);
+        }
+        let id = id as isize;
+
         let ring = self.inner.get();
         let index = id % self.capacity;
 
-        let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 || id > safe_head {
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 || id > latest_committed_id {
             return Err(ChannelError::IDNotYetWritten);
         }
 
@@ -181,21 +196,30 @@ where
     pub fn get_latest(&self) -> Result<(T, isize), ChannelError> {
         let ring = self.inner.get();
 
-        let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 {
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 {
             return Err(ChannelError::IDNotYetWritten);
         }
-        let res;
-        unsafe { res = Ok(((*ring)[(safe_head % self.capacity) as usize], safe_head)) }
+        let result;
+        unsafe {
+            result = Ok((
+                (*ring)[(latest_committed_id % self.capacity) as usize],
+                latest_committed_id,
+            ))
+        }
 
-        if safe_head < self.oldest() {
+        if latest_committed_id < self.oldest() {
+            // The only way that this should be possible is if the buffer is being written to so quickly
+            // that it is completely overwritten before the read can actually take place
+            // With a very small buffer this might be possible although this check is probably
+            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
             return Err(ChannelError::Overloaded);
         }
 
-        res
+        result
     }
 
-    pub fn get_blocking(&self, id: isize) -> Result<T, ChannelError> {
+    pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld(_)) {
@@ -206,16 +230,18 @@ where
         }
         // this could be better than a spin if the update rate is slow
         // create the listener then check again as the creation can take a long time!
-        let listener = self.event.listen();
-        if self.read_head.load(Ordering::Acquire) < id {
-            listener.wait();
+        while self.read_head.load(Ordering::Acquire) < id as isize {
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as isize {
+                listener.wait();
+            }
         }
         self.try_get(id)
     }
 
     pub fn get_blocking_before(
         &self,
-        id: isize,
+        id: usize,
         before: std::time::Instant,
     ) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
@@ -226,15 +252,20 @@ where
         } else {
             return immediate;
         }
-        // this is better than a spin...
-        let listener = self.event.listen();
-        if self.read_head.load(Ordering::Acquire) < id && !listener.wait_deadline(before) {
-            return Err(ChannelError::Timeout);
+
+        while self.read_head.load(Ordering::Acquire) < id as isize {
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as isize
+                && !listener.wait_deadline(before)
+            {
+                return Err(ChannelError::Timeout);
+            }
         }
+
         self.try_get(id)
     }
 
-    pub async fn get(&self, id: isize) -> Result<T, ChannelError> {
+    pub async fn get(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld(_)) {
@@ -243,10 +274,14 @@ where
         } else {
             return immediate;
         }
-        let listener = self.event.listen();
-        if self.read_head.load(Ordering::Acquire) < id {
-            listener.await;
+
+        while self.read_head.load(Ordering::Acquire) < id as isize {
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as isize {
+                listener.await;
+            }
         }
+
         Ok(self.try_get(id).unwrap())
     }
 

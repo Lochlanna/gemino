@@ -24,8 +24,7 @@ where
         }
     }
     println!(
-        "bench -> {}: Average {}ns over {} runs. Fastest {}ns - Slowest {}ns",
-        name, average, runs, min, max
+        "bench -> {name}: Average {average}ns over {runs} runs. Fastest {min}ns - Slowest {max}ns"
     );
 }
 
@@ -37,7 +36,7 @@ async fn tokio_broadcast() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
-                tx.send(i);
+                tx.send(i).expect("couldn't send value");
             }
         });
         let reader = tokio::spawn(async move {
@@ -98,7 +97,7 @@ async fn tokio_broadcast_multi_reader() {
         let mut rx_clone = tx.subscribe();
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
-                tx.send(i);
+                tx.send(i).expect("couldn't send value");
             }
         });
         let reader_a = tokio::spawn(async move {

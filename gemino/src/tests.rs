@@ -7,7 +7,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-fn read_sequential<T: ChannelValue + Sync>(
+fn read_sequential<T: ChannelValue + Sync + Send>(
     mut consume: Receiver<T>,
     starting_at: usize,
     until: usize,
@@ -35,7 +35,7 @@ fn read_sequential<T: ChannelValue + Sync>(
     })
 }
 
-fn write_all<T: ChannelValue + Sync>(
+fn write_all<T: ChannelValue + Sync + Send + Send>(
     produce: Sender<T>,
     from: &Vec<T>,
     at_rate_of: i32,
@@ -126,7 +126,9 @@ fn receive_many() {
         producer.send(v);
     }
     let mut values = Vec::with_capacity(15);
-    let missed = consumer.recv_many(&mut values);
+    let missed = consumer
+        .recv_many(&mut values)
+        .expect("couldn't do build read from channel");
     assert_eq!(missed, 7);
     assert_eq!(vec![7, 8, 9], values);
 
@@ -135,7 +137,9 @@ fn receive_many() {
         producer.send(v);
     }
     let mut values = Vec::with_capacity(15);
-    let missed = consumer.recv_many(&mut values);
+    let missed = consumer
+        .recv_many(&mut values)
+        .expect("couldn't do build read from channel");
     assert_eq!(vec![0, 1, 2, 3, 4], values);
     assert_eq!(missed, 0);
 }
@@ -268,6 +272,7 @@ fn capacity() {
         chan.send(i);
     }
     let mut results = Vec::new();
-    chan.read_batch_from(0, &mut results);
+    chan.read_batch_from(0, &mut results)
+        .expect("couldn't perform bulk read");
     assert_eq!(results.len(), 8);
 }

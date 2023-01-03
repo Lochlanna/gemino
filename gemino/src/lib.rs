@@ -34,7 +34,7 @@ pub use channel::ChannelValue;
 #[derive(Debug)]
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
-    next_id: isize,
+    next_id: usize,
 }
 
 #[derive(Error, Debug)]
@@ -134,9 +134,9 @@ where
             }
             Err(err) => match err {
                 ChannelError::IdTooOld(oldest) => {
-                    self.next_id = oldest;
+                    self.next_id = oldest as usize;
                     let missed = self.next_id - id;
-                    Err(Error::Lagged(missed as usize))
+                    Err(Error::Lagged(missed))
                 }
                 _ => panic!("unexpected error while receving from channel: {err}"),
             },
@@ -170,9 +170,9 @@ where
             }
             Err(err) => match err {
                 ChannelError::IdTooOld(oldest) => {
-                    self.next_id = oldest;
+                    self.next_id = oldest as usize;
                     let missed = self.next_id - id;
-                    Err(Error::Lagged(missed as usize))
+                    Err(Error::Lagged(missed))
                 }
                 _ => panic!("unexpected error while receving from channel: {err}"),
             },
@@ -193,22 +193,28 @@ where
     /// tx.send(12);
     /// tx.send(21);
     /// let mut results = Vec::new();
-    /// let v = rx.recv_many(&mut results);
+    /// let v = rx.recv_many(&mut results).expect("couldn't do bulk read from channel");
     /// assert_eq!(v, 1); // We missed out on one message
     /// assert_eq!(vec![12,21], results);
     /// tx.send(5);
     /// let v = rx.try_recv().expect("couldn't get a value"); // The receiver is now caught up to the latest value
     /// assert_eq!(v, 5);
     /// ```
-    pub fn recv_many(&mut self, result: &mut Vec<T>) -> usize {
-        let (first_id, last_id) = self.inner.read_batch_from(self.next_id, result);
+    pub fn recv_many(&mut self, result: &mut Vec<T>) -> Result<usize, Error> {
+        let (first_id, last_id) =
+            self.inner
+                .read_batch_from(self.next_id, result)
+                .or_else(|err| match err {
+                    ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+                    _ => panic!("unexpected error while performing bulk read: {err}"),
+                })?;
 
         let mut missed = 0;
-        if first_id > self.next_id {
-            missed = first_id - self.next_id
+        if first_id as usize > self.next_id {
+            missed = first_id as usize - self.next_id
         }
-        self.next_id = last_id + 1;
-        missed as usize
+        self.next_id = last_id as usize + 1;
+        Ok(missed)
     }
 
     /// Attempt to retrieve the next value from the channel immediately. This function will not block.
@@ -246,9 +252,9 @@ where
                 match err {
                     ChannelError::IdTooOld(oldest_valid_id) => {
                         //lagged
-                        self.next_id = oldest_valid_id;
-                        let missed = oldest_valid_id - id;
-                        Err(Error::Lagged(missed as usize))
+                        self.next_id = oldest_valid_id as usize;
+                        let missed = oldest_valid_id as usize - id;
+                        Err(Error::Lagged(missed))
                     }
                     ChannelError::IDNotYetWritten => Err(Error::NoNewData),
                     _ => panic!("unexpected error while receiving value from channel: {err}"),
@@ -293,10 +299,10 @@ where
     /// ```
     pub fn latest(&mut self) -> Result<T, Error> {
         let (value, id) = self.try_latest()?;
-        if id < self.next_id {
+        if (id as usize) < self.next_id {
             return self.recv();
         }
-        self.next_id = id + 1;
+        self.next_id = id as usize + 1;
         Ok(value)
     }
 
@@ -330,10 +336,10 @@ where
     /// ```
     pub async fn latest_async(&mut self) -> Result<T, Error> {
         let (value, id) = self.try_latest()?;
-        if id < self.next_id {
+        if (id as usize) < self.next_id {
             return self.async_recv().await;
         }
-        self.next_id = id + 1;
+        self.next_id = id as usize + 1;
         Ok(value)
     }
 }

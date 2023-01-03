@@ -25,7 +25,7 @@ fn sequential_std_mpsc(b: &mut Bencher) {
     b.iter(|| {
         let (producer, consumer) = channel();
         for i in 0..1000 {
-            producer.send(i);
+            producer.send(i).expect("couldn't send value");
             let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, i);
         }
@@ -39,7 +39,7 @@ fn sequential_crossbeam_bounded(b: &mut Bencher) {
     b.iter(|| {
         let (producer, consumer) = bounded(100);
         for i in 0..1000 {
-            producer.send(i);
+            producer.send(i).expect("couldn't send value");
             let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, i);
         }
@@ -53,7 +53,7 @@ fn sequential_crossbeam_unbounded(b: &mut Bencher) {
     b.iter(|| {
         let (producer, consumer) = unbounded();
         for i in 0..1000 {
-            producer.send(i);
+            producer.send(i).expect("couldn't send value");
             let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, i);
         }
@@ -67,7 +67,7 @@ fn sequential_kanal(b: &mut Bencher) {
     b.iter(|| {
         let (producer, consumer) = kanal_bounded(100);
         for i in 0..1000 {
-            producer.send(i);
+            producer.send(i).expect("couldn't send value");
             let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, i);
         }
