@@ -138,6 +138,16 @@ where
                 result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
             }
         }
+
+        // We need to ensure that no writers were writing to the same cells we were reading. If they
+        // did we invalidate those values.
+        let new_oldest = self.oldest();
+        if id < new_oldest {
+            // we have to invalidate some number of values as they may have been overwritten during the copy
+            // this is pretty expensive to do but unavoidable unfortunately
+            let num_to_remove = new_oldest - id;
+            result.drain(0..num_to_remove);
+        }
         (id, safe_head)
     }
 
@@ -150,15 +160,19 @@ where
             return Err(ChannelError::IDNotYetWritten);
         }
 
+        let result;
+        unsafe {
+            result = (*ring)[index];
+        }
+
+        // By checking this after we have read the value we are guaranteeing that the value we read the actual value we wanted
+        // and it wasn't overwritten by a reader. If we did this check before hand it would be possible
+        // for a reader to update the value between the check and reading the value from memory
         let oldest = self.oldest();
         if id < oldest {
             return Err(ChannelError::IdTooOld(oldest));
         }
 
-        let result;
-        unsafe {
-            result = (*ring)[index];
-        }
         Ok(result)
     }
 
@@ -175,6 +189,8 @@ where
                 safe_head as usize,
             ))
         }
+        // Should we bother to check oldest here? If the buffer was small enough and the writers
+        // fast enough it might be possible to invalidate even this...
     }
 
     pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
