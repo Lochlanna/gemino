@@ -36,7 +36,7 @@ where
     type Item = T;
 
     fn bench_send(&self, v: Self::Item) {
-        self.send(v);
+        self.send(v).expect("failed to send");
     }
 }
 

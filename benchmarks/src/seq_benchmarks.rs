@@ -11,7 +11,7 @@ fn sequential_gemino(b: &mut Bencher) {
     b.iter(|| {
         let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
         for i in 0..1000 {
-            producer.send(i);
+            producer.send(i).expect("failed to send");
             let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, i);
         }

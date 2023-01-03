@@ -1,6 +1,6 @@
 use std::cell::SyncUnsafeCell;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -24,6 +24,8 @@ pub enum ChannelError {
     BufferTooBig,
     #[error("channel is being completely overwritten before a read can take place")]
     Overloaded,
+    #[error("channel has been closed")]
+    Closed,
 }
 
 #[derive(Debug)]
@@ -33,6 +35,7 @@ pub struct Channel<T> {
     read_head: AtomicIsize,
     capacity: isize,
     event: event_listener::Event,
+    closed: AtomicBool,
 }
 
 impl<T> Channel<T> {
@@ -57,6 +60,7 @@ impl<T> Channel<T> {
             read_head: AtomicIsize::new(-1),
             capacity: buffer_size as isize,
             event: event_listener::Event::new(),
+            closed: AtomicBool::new(false),
         }))
     }
 
@@ -73,13 +77,31 @@ impl<T> Channel<T> {
     pub fn capacity(&self) -> usize {
         self.capacity as usize
     }
+
+    fn closed(&self) -> Result<(), ChannelError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(ChannelError::Closed);
+        }
+        Ok(())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed().is_err()
+    }
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        // Notify will cause all waiting/blocking threads to wake up and cancel
+        self.event.notify(usize::MAX);
+    }
 }
 
 impl<T> Channel<T>
 where
     T: ChannelValue,
 {
-    pub fn send(&self, val: T) -> isize {
+    pub fn send(&self, val: T) -> Result<isize, ChannelError> {
+        self.closed()?;
+
         let ring = self.inner.get();
 
         let id = self.write_head.fetch_add(1, Ordering::Release);
@@ -94,7 +116,7 @@ where
             .is_err()
         {}
         self.event.notify(usize::MAX);
-        id
+        Ok(id)
     }
 
     pub fn read_batch_from(
@@ -111,6 +133,7 @@ where
 
         let latest_committed_id = self.read_head.load(Ordering::Acquire);
         if latest_committed_id < from_id {
+            self.closed()?;
             return Err(ChannelError::IDNotYetWritten);
         }
 
@@ -174,6 +197,7 @@ where
 
         let latest_committed_id = self.read_head.load(Ordering::Acquire);
         if latest_committed_id < 0 || id > latest_committed_id {
+            self.closed()?;
             return Err(ChannelError::IDNotYetWritten);
         }
 
@@ -194,6 +218,8 @@ where
     }
 
     pub fn get_latest(&self) -> Result<(T, isize), ChannelError> {
+        self.closed()?;
+
         let ring = self.inner.get();
 
         let latest_committed_id = self.read_head.load(Ordering::Acquire);
@@ -222,7 +248,7 @@ where
     pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld(_)) {
+            if !matches!(err, ChannelError::IDNotYetWritten) {
                 return immediate;
             }
         } else {
@@ -235,6 +261,7 @@ where
             if self.read_head.load(Ordering::Acquire) < id as isize {
                 listener.wait();
             }
+            self.closed()?
         }
         self.try_get(id)
     }
@@ -246,7 +273,7 @@ where
     ) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld(_)) {
+            if !matches!(err, ChannelError::IDNotYetWritten) {
                 return immediate;
             }
         } else {
@@ -260,6 +287,7 @@ where
             {
                 return Err(ChannelError::Timeout);
             }
+            self.closed()?;
         }
 
         self.try_get(id)
@@ -268,7 +296,7 @@ where
     pub async fn get(&self, id: usize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
-            if matches!(err, ChannelError::IdTooOld(_)) {
+            if !matches!(err, ChannelError::IDNotYetWritten) {
                 return immediate;
             }
         } else {
@@ -280,6 +308,7 @@ where
             if self.read_head.load(Ordering::Acquire) < id as isize {
                 listener.await;
             }
+            self.closed()?;
         }
 
         Ok(self.try_get(id).unwrap())

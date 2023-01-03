@@ -66,7 +66,7 @@ async fn gemino() {
         let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
-                tx.send(i);
+                tx.send(i).expect("failed to send");
             }
         });
         let reader = tokio::spawn(async move {
@@ -139,7 +139,7 @@ async fn gemino_multi_reader() {
         let mut rx_clone = rx.clone();
         let writer = tokio::spawn(async move {
             for i in 0..num_to_write {
-                tx.send(i);
+                tx.send(i).expect("failed to send");
             }
         });
         let reader_a = tokio::spawn(async move {

@@ -49,7 +49,7 @@ fn write_all<T: ChannelValue + Sync + Send + Send>(
             per.div(at_rate_of)
         };
         for item in from {
-            produce.send(item);
+            produce.send(item).expect("failed to send");
             thread::sleep(
                 delay_micros
                     .to_std()
@@ -62,12 +62,12 @@ fn write_all<T: ChannelValue + Sync + Send + Send>(
 #[test]
 fn sequential_read_write() {
     let chan = Channel::new(2).expect("couldn't create channel");
-    chan.send(42);
-    chan.send(21);
+    chan.send(42).expect("failed to send");
+    chan.send(21).expect("failed to send");
     assert_eq!(chan.try_get(0).expect("no value"), 42);
     assert_eq!(chan.try_get(1).expect("no value"), 21);
     assert_eq!(chan.get_latest().expect("no value"), (21, 1));
-    chan.send(12);
+    chan.send(12).expect("failed to send");
     assert_eq!(chan.get_latest().expect("no value"), (12, 2));
     assert!(chan.try_get(0).is_err());
     assert_eq!(chan.try_get(2).expect("no value"), 12);
@@ -113,7 +113,7 @@ fn simultaneous_read_write_multiple_reader() {
 fn seq_read_write_many() {
     let chan = Channel::new(100).expect("couldn't create channel");
     for i in 0..1000 {
-        chan.send(i);
+        chan.send(i).expect("failed to send");
         let v = chan.try_get(i).expect("couldn't get value");
         assert_eq!(v, i);
     }
@@ -123,7 +123,7 @@ fn seq_read_write_many() {
 fn receive_many() {
     let (producer, mut consumer) = crate::channel(3).expect("couldn't create channel");
     for v in 0..10 {
-        producer.send(v);
+        producer.send(v).expect("failed to send");
     }
     let mut values = Vec::with_capacity(15);
     let missed = consumer
@@ -134,7 +134,7 @@ fn receive_many() {
 
     let (producer, mut consumer) = crate::channel(40).expect("couldn't create channel");
     for v in 0..5 {
-        producer.send(v);
+        producer.send(v).expect("failed to send");
     }
     let mut values = Vec::with_capacity(15);
     let missed = consumer
@@ -148,19 +148,19 @@ fn receive_many() {
 fn oldest() {
     let chan = Channel::new(3).expect("couldn't create channel");
     for v in 0..10 {
-        chan.send(v);
+        chan.send(v).expect("failed to send");
     }
     assert_eq!(chan.oldest(), 7);
 
     let chan = Channel::new(12).expect("couldn't create channel");
     for v in 0..10 {
-        chan.send(v);
+        chan.send(v).expect("failed to send");
     }
     assert_eq!(chan.oldest(), 0);
 
     let chan = Channel::new(1).expect("couldn't create channel");
     for v in 0..10 {
-        chan.send(v);
+        chan.send(v).expect("failed to send");
     }
     assert_eq!(chan.oldest(), 9);
 }
@@ -169,7 +169,7 @@ fn oldest() {
 fn id_too_old() {
     let chan = Channel::new(3).expect("couldn't create channel");
     for v in 0..10 {
-        chan.send(v);
+        chan.send(v).expect("failed to send");
     }
     let res = chan.try_get(0);
     match res {
@@ -183,14 +183,14 @@ fn id_too_old() {
 #[test]
 fn lagged() {
     let (tx, mut rx) = crate::channel(3).expect("couldn't create channel");
-    tx.send(0);
+    tx.send(0).expect("failed to send");
     let res = rx.recv();
     match res {
         Ok(v) => assert_eq!(v, 0),
         Err(_) => panic!("expected to get a value back from the channel"),
     }
     for v in 1..11 {
-        tx.send(v);
+        tx.send(v).expect("failed to send");
     }
     let res = rx.recv();
     match res {
@@ -215,7 +215,7 @@ fn id_not_written() {
         Ok(_) => panic!("no values are written so this should be an error"),
         Err(err) => assert!(matches!(err, Error::NoNewData)),
     }
-    tx.send(42);
+    tx.send(42).expect("failed to send");
     let res = rx.try_recv();
     match res {
         Ok(v) => assert_eq!(v, 42),
@@ -269,10 +269,46 @@ fn capacity() {
     let chan = Channel::<u8>::new(8).expect("couldn't create channel");
     assert_eq!(chan.capacity(), 8);
     for i in 0..10 {
-        chan.send(i);
+        chan.send(i).expect("failed to send");
     }
     let mut results = Vec::new();
     chan.read_batch_from(0, &mut results)
         .expect("couldn't perform bulk read");
     assert_eq!(results.len(), 8);
+}
+
+#[test]
+fn close() {
+    let (tx, mut rx) = crate::channel::<u8>(3).expect("couldn't create channel");
+    tx.send(42).expect("failed to send message");
+    tx.close();
+    assert!(tx.send(21).is_err());
+    let v = rx.recv().expect("couldn't receive value");
+    assert_eq!(v, 42);
+    let fail = rx.recv();
+    assert!(fail.is_err());
+    assert!(matches!(fail.err().unwrap(), Error::Closed));
+}
+
+#[test]
+fn close_notify() {
+    let (tx, mut rx) = crate::channel::<u8>(3).expect("couldn't create channel");
+    thread::spawn(move || {
+        thread::sleep(core::time::Duration::from_millis(5));
+        tx.close()
+    });
+    let fail = rx.recv();
+    assert!(fail.is_err());
+    assert!(matches!(fail.err().unwrap(), Error::Closed));
+}
+
+#[test]
+fn latest_after_closed() {
+    let (tx, mut rx) = crate::channel::<u8>(3).expect("couldn't create channel");
+    tx.close();
+    let fail = rx.latest();
+    assert!(fail.is_err());
+    assert!(matches!(fail.err().unwrap(), Error::Closed));
+    assert!(tx.is_closed());
+    assert!(rx.is_closed());
 }

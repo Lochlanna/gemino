@@ -49,6 +49,8 @@ pub enum Error {
     BufferTooBig,
     #[error("channel is being written so fast that a valid read was not possible")]
     Overloaded,
+    #[error("the channel has been closed")]
+    Closed,
 }
 
 impl<T> Receiver<T> {
@@ -102,6 +104,10 @@ impl<T> Receiver<T> {
         self.next_id = 0;
         self
     }
+
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
 }
 
 impl<T> Receiver<T>
@@ -138,6 +144,7 @@ where
                     let missed = self.next_id - id;
                     Err(Error::Lagged(missed))
                 }
+                ChannelError::Closed => Err(Error::Closed),
                 _ => panic!("unexpected error while receving from channel: {err}"),
             },
         }
@@ -174,6 +181,7 @@ where
                     let missed = self.next_id - id;
                     Err(Error::Lagged(missed))
                 }
+                ChannelError::Closed => Err(Error::Closed),
                 _ => panic!("unexpected error while receving from channel: {err}"),
             },
         }
@@ -206,6 +214,7 @@ where
                 .read_batch_from(self.next_id, result)
                 .or_else(|err| match err {
                     ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+                    ChannelError::Closed => Err(Error::Closed),
                     _ => panic!("unexpected error while performing bulk read: {err}"),
                 })?;
 
@@ -256,6 +265,7 @@ where
                         let missed = oldest_valid_id as usize - id;
                         Err(Error::Lagged(missed))
                     }
+                    ChannelError::Closed => Err(Error::Closed),
                     ChannelError::IDNotYetWritten => Err(Error::NoNewData),
                     _ => panic!("unexpected error while receiving value from channel: {err}"),
                 }
@@ -267,6 +277,7 @@ where
         self.inner.get_latest().or_else(|err| match err {
             ChannelError::Overloaded => Err(Error::Overloaded),
             ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+            ChannelError::Closed => Err(Error::Closed),
             _ => panic!("unexpected data while getting latest value from channel: {err}"),
         })
     }
@@ -392,6 +403,14 @@ impl<T> Sender<T> {
     pub fn to_inner(self) -> Arc<Channel<T>> {
         self.inner
     }
+
+    pub fn close(&self) {
+        self.inner.close();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
 }
 
 impl<T> Sender<T>
@@ -409,8 +428,14 @@ where
     /// let v = rx.try_recv().expect("Couldn't receive from channel");
     /// assert_eq!(v, 42);
     /// ```
-    pub fn send(&self, val: T) {
-        self.inner.send(val);
+    pub fn send(&self, val: T) -> Result<(), Error> {
+        if let Err(err) = self.inner.send(val) {
+            return match err {
+                ChannelError::Closed => Err(Error::Closed),
+                _ => panic!("unexpected error attempting to send to channel"),
+            };
+        }
+        Ok(())
     }
 }
 
