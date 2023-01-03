@@ -13,6 +13,8 @@
 #![feature(vec_into_raw_parts)]
 #![feature(iter_collect_into)]
 
+extern crate core;
+
 #[allow(dead_code)]
 mod channel;
 
@@ -43,6 +45,10 @@ pub enum Error {
     NoNewData,
     #[error("channel buffer size must be at least 1")]
     BufferTooSmall,
+    #[error("channel buffer size cannot exceed isize::MAX")]
+    BufferTooBig,
+    #[error("channel is being written so fast that a valid read was not possible")]
+    Overloaded,
 }
 
 impl<T> Receiver<T> {
@@ -126,12 +132,14 @@ where
                 self.next_id += 1;
                 Ok(value)
             }
-            Err(_) => {
-                //lagged
-                self.next_id = self.inner.oldest();
-                let missed = self.next_id - id;
-                Err(Error::Lagged(missed as usize))
-            }
+            Err(err) => match err {
+                ChannelError::IdTooOld(oldest) => {
+                    self.next_id = oldest;
+                    let missed = self.next_id - id;
+                    Err(Error::Lagged(missed as usize))
+                }
+                _ => panic!("unexpected error while receving from channel: {}", err),
+            },
         }
     }
 
@@ -160,12 +168,14 @@ where
                 self.next_id += 1;
                 Ok(value)
             }
-            Err(_) => {
-                //lagged
-                self.next_id = self.inner.oldest();
-                let missed = self.next_id - id;
-                Err(Error::Lagged(missed as usize))
-            }
+            Err(err) => match err {
+                ChannelError::IdTooOld(oldest) => {
+                    self.next_id = oldest;
+                    let missed = self.next_id - id;
+                    Err(Error::Lagged(missed as usize))
+                }
+                _ => panic!("unexpected error while receving from channel: {}", err),
+            },
         }
     }
 
@@ -241,11 +251,24 @@ where
                         Err(Error::Lagged(missed as usize))
                     }
                     ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                    ChannelError::Timeout => panic!("try_recv shouldn't be able to timeout"),
-                    _ => panic!("unexpected error"),
+                    _ => panic!(
+                        "unexpected error while receiving value from channel: {}",
+                        err
+                    ),
                 }
             }
         }
+    }
+
+    fn try_latest(&mut self) -> Result<(T, isize), Error> {
+        self.inner.get_latest().or_else(|err| match err {
+            ChannelError::Overloaded => Err(Error::Overloaded),
+            ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+            _ => panic!(
+                "unexpected data while getting latest value from channel: {}",
+                err
+            ),
+        })
     }
 
     /// Get the latest value from the channel unless it has already been read in which case wait (blocking)
@@ -275,7 +298,7 @@ where
     /// assert_eq!(v, 72);
     /// ```
     pub fn latest(&mut self) -> Result<T, Error> {
-        let (value, id) = self.inner.get_latest().ok_or(Error::NoNewData)?;
+        let (value, id) = self.try_latest()?;
         if id < self.next_id {
             return self.recv();
         }
@@ -312,7 +335,7 @@ where
     ///
     /// ```
     pub async fn latest_async(&mut self) -> Result<T, Error> {
-        let (value, id) = self.inner.get_latest().ok_or(Error::NoNewData)?;
+        let (value, id) = self.try_latest()?;
         if id < self.next_id {
             return self.async_recv().await;
         }
@@ -417,7 +440,11 @@ impl<T> From<Arc<Channel<T>>> for Sender<T> {
 /// assert_eq!(v, 42);
 /// ```
 pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
-    let chan = Channel::new(buffer_size).or(Err(Error::BufferTooSmall))?;
+    let chan = Channel::new(buffer_size).or_else(|err| match err {
+        ChannelError::BufferTooSmall => Err(Error::BufferTooSmall),
+        ChannelError::BufferTooBig => Err(Error::BufferTooBig),
+        _ => panic!("unexpected error while creating a new channel: {}", err),
+    })?;
     let sender = Sender::from(chan.clone());
     let receiver = Receiver::from(chan);
     Ok((sender, receiver))

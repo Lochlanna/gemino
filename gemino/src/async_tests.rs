@@ -24,7 +24,8 @@ async fn wait_for_next() {
         cloned.send(42);
         println!("value has been put onto the ring buffer")
     });
-    assert!(chan.get_latest().is_none());
+    let res = chan.get_latest();
+    assert!(res.is_err());
     chan.send(12);
     let (value, id) = chan.read_next().await;
     assert_eq!(value, 42);

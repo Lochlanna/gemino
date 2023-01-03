@@ -20,6 +20,8 @@ pub enum ChannelError {
     BufferTooSmall,
     #[error("channel buffer size cannot exceed isize::MAX")]
     BufferTooBig,
+    #[error("channel is being completly overwritten before a read can take place")]
+    Overloaded,
 }
 
 #[derive(Debug)]
@@ -37,7 +39,7 @@ impl<T> Channel<T> {
             return Err(ChannelError::BufferTooSmall);
         }
         if buffer_size > isize::MAX as usize {
-            return Err(ChannelError::BufferTooBig)
+            return Err(ChannelError::BufferTooBig);
         }
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
@@ -84,12 +86,7 @@ where
         //busy spin waiting for previous producer threads to catch up
         while self
             .read_head
-            .compare_exchange(
-                id - 1,
-                id,
-                Ordering::Release,
-                Ordering::Acquire,
-            )
+            .compare_exchange(id - 1, id, Ordering::Release, Ordering::Acquire)
             .is_err()
         {}
         self.event.notify(usize::MAX);
@@ -181,21 +178,21 @@ where
         Ok(result)
     }
 
-    pub fn get_latest(&self) -> Option<(T, isize)> {
+    pub fn get_latest(&self) -> Result<(T, isize), ChannelError> {
         let ring = self.inner.get();
 
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 {
-            return None;
+            return Err(ChannelError::IDNotYetWritten);
         }
-        unsafe {
-            Some((
-                (*ring)[(safe_head % self.capacity) as usize],
-                safe_head
-            ))
+        let res;
+        unsafe { res = Ok(((*ring)[(safe_head % self.capacity) as usize], safe_head)) }
+
+        if safe_head < self.oldest() {
+            return Err(ChannelError::Overloaded);
         }
-        // Should we bother to check oldest here? If the buffer was small enough and the writers
-        // fast enough it might be possible to invalidate even this...
+
+        res
     }
 
     pub fn get_blocking(&self, id: isize) -> Result<T, ChannelError> {
@@ -208,12 +205,10 @@ where
             return immediate;
         }
         // this could be better than a spin if the update rate is slow
-        while self.read_head.load(Ordering::Acquire) < id {
-            // create the listener then check again as the creation can take a long time!
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id {
-                listener.wait();
-            }
+        // create the listener then check again as the creation can take a long time!
+        let listener = self.event.listen();
+        if self.read_head.load(Ordering::Acquire) < id {
+            listener.wait();
         }
         self.try_get(id)
     }
@@ -232,12 +227,9 @@ where
             return immediate;
         }
         // this is better than a spin...
-        while self.read_head.load(Ordering::Acquire) < id {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id && !listener.wait_deadline(before)
-            {
-                return Err(ChannelError::Timeout);
-            }
+        let listener = self.event.listen();
+        if self.read_head.load(Ordering::Acquire) < id && !listener.wait_deadline(before) {
+            return Err(ChannelError::Timeout);
         }
         self.try_get(id)
     }
@@ -251,11 +243,9 @@ where
         } else {
             return immediate;
         }
-        while self.read_head.load(Ordering::Acquire) < id {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id {
-                listener.await;
-            }
+        let listener = self.event.listen();
+        if self.read_head.load(Ordering::Acquire) < id {
+            listener.await;
         }
         Ok(self.try_get(id).unwrap())
     }
