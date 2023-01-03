@@ -16,7 +16,7 @@ pub enum ChannelError {
     IDNotYetWritten,
     #[error("operation timed out")]
     Timeout,
-    #[error("channel buffer size must be at least 1")]
+    #[error("channel buffer size cannot be zero")]
     BufferTooSmall,
 }
 
@@ -49,10 +49,7 @@ impl<T> Channel<T> {
         }))
     }
 
-    pub fn read_head(&self) -> i64 {
-        self.read_head.load(Ordering::Acquire)
-    }
-
+    #[inline]
     pub fn oldest(&self) -> usize {
         let head = self.write_head.load(Ordering::Acquire);
         if head < self.capacity {
@@ -79,7 +76,7 @@ where
         unsafe {
             (*ring)[index] = val;
         }
-        //spin lock waiting for previous threads to catch up
+        //busy spin waiting for previous producer threads to catch up
         while self
             .read_head
             .compare_exchange(
@@ -96,10 +93,6 @@ where
 
     pub fn read_batch_from(&self, mut id: usize, result: &mut Vec<T>) -> (usize, usize) {
         let ring = self.inner.get();
-        let first_element_id = self.oldest();
-        if id < first_element_id {
-            id = first_element_id
-        }
 
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 {
@@ -109,6 +102,12 @@ where
         if safe_head < id {
             return (0, 0);
         }
+
+        let first_element_id = self.oldest();
+        if id < first_element_id {
+            id = first_element_id
+        }
+
         let start_idx = id % self.capacity;
         let mut end_idx = safe_head % self.capacity;
 
@@ -146,14 +145,14 @@ where
         let ring = self.inner.get();
         let index = id % self.capacity;
 
-        let start_id = self.oldest();
-        if id < start_id {
-            return Err(ChannelError::IdTooOld(start_id));
-        }
-
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 || id > safe_head as usize {
             return Err(ChannelError::IDNotYetWritten);
+        }
+
+        let oldest = self.oldest();
+        if id < oldest {
+            return Err(ChannelError::IdTooOld(oldest));
         }
 
         let result;
@@ -187,7 +186,7 @@ where
         } else {
             return immediate;
         }
-        // this is better than a spin...
+        // this could be better than a spin if the update rate is slow
         while self.read_head.load(Ordering::Acquire) < id as i64 {
             // create the listener then check again as the creation can take a long time!
             let listener = self.event.listen();
@@ -195,7 +194,7 @@ where
                 listener.wait();
             }
         }
-        Ok(self.try_get(id).unwrap())
+        self.try_get(id)
     }
 
     pub fn get_blocking_before(
