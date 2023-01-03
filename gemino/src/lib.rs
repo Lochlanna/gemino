@@ -32,7 +32,7 @@ pub use channel::ChannelValue;
 #[derive(Debug)]
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
-    next_id: usize,
+    next_id: isize,
 }
 
 #[derive(Error, Debug)]
@@ -130,7 +130,7 @@ where
                 //lagged
                 self.next_id = self.inner.oldest();
                 let missed = self.next_id - id;
-                Err(Error::Lagged(missed))
+                Err(Error::Lagged(missed as usize))
             }
         }
     }
@@ -164,7 +164,7 @@ where
                 //lagged
                 self.next_id = self.inner.oldest();
                 let missed = self.next_id - id;
-                Err(Error::Lagged(missed))
+                Err(Error::Lagged(missed as usize))
             }
         }
     }
@@ -198,7 +198,7 @@ where
             missed = first_id - self.next_id
         }
         self.next_id = last_id + 1;
-        missed
+        missed as usize
     }
 
     /// Attempt to retrieve the next value from the channel immediately. This function will not block.
@@ -238,7 +238,7 @@ where
                         //lagged
                         self.next_id = oldest_valid_id;
                         let missed = oldest_valid_id - id;
-                        Err(Error::Lagged(missed))
+                        Err(Error::Lagged(missed as usize))
                     }
                     ChannelError::IDNotYetWritten => Err(Error::NoNewData),
                     ChannelError::Timeout => panic!("try_recv shouldn't be able to timeout"),

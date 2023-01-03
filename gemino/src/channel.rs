@@ -1,6 +1,6 @@
 use std::cell::SyncUnsafeCell;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -11,21 +11,23 @@ impl<T> ChannelValue for T where T: Copy + Send + 'static {}
 #[derive(Error, Debug)]
 pub enum ChannelError {
     #[error("channel no longer contains the requested value")]
-    IdTooOld(usize),
+    IdTooOld(isize),
     #[error("value with the given ID has not yet been written to the channel")]
     IDNotYetWritten,
     #[error("operation timed out")]
     Timeout,
     #[error("channel buffer size cannot be zero")]
     BufferTooSmall,
+    #[error("channel buffer size cannot exceed isize::MAX")]
+    BufferTooBig,
 }
 
 #[derive(Debug)]
 pub struct Channel<T> {
     inner: SyncUnsafeCell<Vec<T>>,
-    write_head: AtomicUsize,
-    read_head: AtomicI64,
-    capacity: usize,
+    write_head: AtomicIsize,
+    read_head: AtomicIsize,
+    capacity: isize,
     event: event_listener::Event,
 }
 
@@ -33,6 +35,9 @@ impl<T> Channel<T> {
     pub(crate) fn new(buffer_size: usize) -> Result<Arc<Self>, ChannelError> {
         if buffer_size < 1 {
             return Err(ChannelError::BufferTooSmall);
+        }
+        if buffer_size > isize::MAX as usize {
+            return Err(ChannelError::BufferTooBig)
         }
         let mut inner = Vec::with_capacity(buffer_size);
         unsafe {
@@ -42,15 +47,15 @@ impl<T> Channel<T> {
 
         Ok(Arc::new(Self {
             inner: SyncUnsafeCell::new(inner),
-            write_head: AtomicUsize::new(0),
-            read_head: AtomicI64::new(-1),
-            capacity: buffer_size,
+            write_head: AtomicIsize::new(0),
+            read_head: AtomicIsize::new(-1),
+            capacity: buffer_size as isize,
             event: event_listener::Event::new(),
         }))
     }
 
     #[inline]
-    pub fn oldest(&self) -> usize {
+    pub fn oldest(&self) -> isize {
         let head = self.write_head.load(Ordering::Acquire);
         if head < self.capacity {
             0
@@ -60,7 +65,7 @@ impl<T> Channel<T> {
     }
 
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.capacity as usize
     }
 }
 
@@ -68,20 +73,20 @@ impl<T> Channel<T>
 where
     T: ChannelValue,
 {
-    pub fn send(&self, val: T) -> usize {
+    pub fn send(&self, val: T) -> isize {
         let ring = self.inner.get();
 
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
         unsafe {
-            (*ring)[index] = val;
+            (*ring)[index as usize] = val;
         }
         //busy spin waiting for previous producer threads to catch up
         while self
             .read_head
             .compare_exchange(
-                id as i64 - 1,
-                id as i64,
+                id - 1,
+                id,
                 Ordering::Release,
                 Ordering::Acquire,
             )
@@ -91,14 +96,14 @@ where
         id
     }
 
-    pub fn read_batch_from(&self, mut id: usize, result: &mut Vec<T>) -> (usize, usize) {
+    pub fn read_batch_from(&self, mut id: isize, result: &mut Vec<T>) -> (isize, isize) {
         let ring = self.inner.get();
 
         let safe_head = self.read_head.load(Ordering::Acquire);
         if safe_head < 0 {
             return (0, 0);
         }
-        let safe_head = safe_head as usize;
+        let safe_head = safe_head;
         if safe_head < id {
             return (0, 0);
         }
@@ -108,8 +113,8 @@ where
             id = first_element_id
         }
 
-        let start_idx = id % self.capacity;
-        let mut end_idx = safe_head % self.capacity;
+        let start_idx = (id % self.capacity) as usize;
+        let mut end_idx = (safe_head % self.capacity) as usize;
 
         if start_idx == end_idx {
             // this means that it will end up getting the value at start_idx only
@@ -126,7 +131,7 @@ where
                 result[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
             }
         } else {
-            let num_elements = end_idx + (self.capacity - start_idx) + 1;
+            let num_elements = end_idx + (self.capacity as usize - start_idx) + 1;
             result.reserve(num_elements);
             let mut res_start = result.len();
             unsafe {
@@ -145,24 +150,24 @@ where
         if id < new_oldest {
             // we have to invalidate some number of values as they may have been overwritten during the copy
             // this is pretty expensive to do but unavoidable unfortunately
-            let num_to_remove = new_oldest - id;
+            let num_to_remove = (new_oldest - id) as usize;
             result.drain(0..num_to_remove);
         }
         (id, safe_head)
     }
 
-    pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
+    pub fn try_get(&self, id: isize) -> Result<T, ChannelError> {
         let ring = self.inner.get();
         let index = id % self.capacity;
 
         let safe_head = self.read_head.load(Ordering::Acquire);
-        if safe_head < 0 || id > safe_head as usize {
+        if safe_head < 0 || id > safe_head {
             return Err(ChannelError::IDNotYetWritten);
         }
 
         let result;
         unsafe {
-            result = (*ring)[index];
+            result = (*ring)[index as usize];
         }
 
         // By checking this after we have read the value we are guaranteeing that the value we read the actual value we wanted
@@ -176,7 +181,7 @@ where
         Ok(result)
     }
 
-    pub fn get_latest(&self) -> Option<(T, usize)> {
+    pub fn get_latest(&self) -> Option<(T, isize)> {
         let ring = self.inner.get();
 
         let safe_head = self.read_head.load(Ordering::Acquire);
@@ -185,15 +190,15 @@ where
         }
         unsafe {
             Some((
-                (*ring)[safe_head as usize % self.capacity],
-                safe_head as usize,
+                (*ring)[(safe_head % self.capacity) as usize],
+                safe_head
             ))
         }
         // Should we bother to check oldest here? If the buffer was small enough and the writers
         // fast enough it might be possible to invalidate even this...
     }
 
-    pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
+    pub fn get_blocking(&self, id: isize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld(_)) {
@@ -203,10 +208,10 @@ where
             return immediate;
         }
         // this could be better than a spin if the update rate is slow
-        while self.read_head.load(Ordering::Acquire) < id as i64 {
+        while self.read_head.load(Ordering::Acquire) < id {
             // create the listener then check again as the creation can take a long time!
             let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 {
+            if self.read_head.load(Ordering::Acquire) < id {
                 listener.wait();
             }
         }
@@ -215,7 +220,7 @@ where
 
     pub fn get_blocking_before(
         &self,
-        id: usize,
+        id: isize,
         before: std::time::Instant,
     ) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
@@ -227,9 +232,9 @@ where
             return immediate;
         }
         // this is better than a spin...
-        while self.read_head.load(Ordering::Acquire) < id as i64 {
+        while self.read_head.load(Ordering::Acquire) < id {
             let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 && !listener.wait_deadline(before)
+            if self.read_head.load(Ordering::Acquire) < id && !listener.wait_deadline(before)
             {
                 return Err(ChannelError::Timeout);
             }
@@ -237,7 +242,7 @@ where
         self.try_get(id)
     }
 
-    pub async fn get(&self, id: usize) -> Result<T, ChannelError> {
+    pub async fn get(&self, id: isize) -> Result<T, ChannelError> {
         let immediate = self.try_get(id);
         if let Err(err) = &immediate {
             if matches!(err, ChannelError::IdTooOld(_)) {
@@ -246,16 +251,16 @@ where
         } else {
             return immediate;
         }
-        while self.read_head.load(Ordering::Acquire) < id as i64 {
+        while self.read_head.load(Ordering::Acquire) < id {
             let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as i64 {
+            if self.read_head.load(Ordering::Acquire) < id {
                 listener.await;
             }
         }
         Ok(self.try_get(id).unwrap())
     }
 
-    pub async fn read_next(&self) -> (T, usize) {
+    pub async fn read_next(&self) -> (T, isize) {
         self.event.listen().await;
         self.get_latest().unwrap()
     }
