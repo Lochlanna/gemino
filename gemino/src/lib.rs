@@ -252,8 +252,12 @@ where
         }
     }
 
-    /// Reads all new values from the channel into a vector. This function does not block and does
-    /// not fail. If there is no new data it does nothing. If there are missed messages the number
+    /// Reads all new values from the channel into a vector. Bulk reads are very fast and memory
+    /// efficient as it does a direct memory copy into the target array and only has to do synchronisation
+    /// checks one time. In an environment where there is high write load this will be the best way to
+    /// read from the channel.
+    ///
+    /// This function does not block and does not fail. If there is no new data it does nothing. If there are missed messages the number
     /// of missed messages will be returned. New values are appended to the given vector so it is the
     /// responsibility of the caller to reset the vector.
     ///
@@ -273,7 +277,7 @@ where
     /// tx.send(12)?;
     /// tx.send(21)?;
     /// let mut results = Vec::new();
-    /// let v = rx.recv_many(&mut results)?;
+    /// let v = rx.try_recv_many(&mut results)?;
     /// assert_eq!(v, 1); // We missed out on one message
     /// assert_eq!(vec![12,21], results);
     /// tx.send(5)?;
@@ -282,7 +286,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn recv_many(&mut self, result: &mut Vec<T>) -> Result<usize, Error> {
+    pub fn try_recv_many(&mut self, result: &mut Vec<T>) -> Result<usize, Error> {
         let (first_id, last_id) =
             self.inner
                 .read_batch_from(self.next_id, result)

@@ -127,7 +127,7 @@ fn receive_many() {
     }
     let mut values = Vec::with_capacity(15);
     let missed = consumer
-        .recv_many(&mut values)
+        .try_recv_many(&mut values)
         .expect("couldn't do build read from channel");
     assert_eq!(missed, 7);
     assert_eq!(vec![7, 8, 9], values);
@@ -138,7 +138,7 @@ fn receive_many() {
     }
     let mut values = Vec::with_capacity(15);
     let missed = consumer
-        .recv_many(&mut values)
+        .try_recv_many(&mut values)
         .expect("couldn't do build read from channel");
     assert_eq!(vec![0, 1, 2, 3, 4], values);
     assert_eq!(missed, 0);
