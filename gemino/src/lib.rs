@@ -9,17 +9,10 @@
 //!
 //! Gemino makes use of unsafe and requires nightly for now.
 
-#![feature(sync_unsafe_cell)]
-#![feature(vec_into_raw_parts)]
-#![feature(iter_collect_into)]
-
-extern crate core;
-
-#[allow(dead_code)]
-mod channel;
-
 #[cfg(test)]
 mod async_tests;
+#[allow(dead_code)]
+mod channel;
 #[cfg(test)]
 mod tests;
 
@@ -27,8 +20,6 @@ use channel::*;
 use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
-
-pub use channel::ChannelValue;
 
 /// A receiver retrieves messages from the channel in the order they were sent
 #[derive(Debug)]
@@ -54,30 +45,6 @@ pub enum Error {
 }
 
 impl<T> Receiver<T> {
-    /// Returns a copy of the pointer to the underlying channel implementation. This is safe although
-    /// not a recommended way to use the channel
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use std::time::Duration;
-    /// # use gemino::channel;
-    /// # tokio_test::block_on(async {
-    /// let (_, rx) = channel(2).expect("couldn't create channel");
-    /// let inner;
-    /// unsafe  {
-    ///     inner = rx.to_inner();
-    /// }
-    /// inner.send(42);
-    /// let v = inner.get(0).await.expect("Couldn't receive latest from channel");
-    /// assert_eq!(v, 42);
-    /// # });
-    ///
-    /// ```
-    pub fn to_inner(self) -> Arc<Channel<T>> {
-        self.inner
-    }
-
     /// Reset the internal position counter to zero. This means that on the next call to receive it
     /// will get either the oldest value on the channel or an id too old error and skip forward to the
     /// oldest value for the next call to receive.
@@ -112,7 +79,7 @@ impl<T> Receiver<T> {
 
 impl<T> Receiver<T>
 where
-    T: ChannelValue,
+    T: Copy + 'static,
 {
     /// Receives the next value from the channel. This function will block until a new value is put onto the
     /// channel; even if there are no senders. It is probably best to use `[recv_before]`
@@ -380,30 +347,6 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// Returns a copy of the pointer to the underlying channel implementation. This is safe although
-    /// not a recommended way to use the channel
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use std::time::Duration;
-    /// # use gemino::channel;
-    /// # tokio_test::block_on(async {
-    /// let (tx, _) = channel(2).expect("couldn't create channel");
-    /// let inner;
-    /// unsafe  {
-    ///     inner = tx.to_inner();
-    /// }
-    /// inner.send(42);
-    /// let v = inner.get(0).await.expect("Couldn't receive latest from channel");
-    /// assert_eq!(v, 42);
-    /// # });
-    ///
-    /// ```
-    pub fn to_inner(self) -> Arc<Channel<T>> {
-        self.inner
-    }
-
     pub fn close(&self) {
         self.inner.close();
     }
@@ -415,7 +358,7 @@ impl<T> Sender<T> {
 
 impl<T> Sender<T>
 where
-    T: ChannelValue,
+    T: Copy + 'static,
 {
     /// put a new value into the channel. This function will always succeed and never block.
     ///
@@ -437,6 +380,10 @@ where
         }
         Ok(())
     }
+
+    pub fn subscribe(&self) -> Receiver<T> {
+        Receiver::from(self.inner.clone())
+    }
 }
 
 impl<T> Clone for Sender<T> {
@@ -450,6 +397,14 @@ impl<T> Clone for Sender<T> {
 impl<T> From<Arc<Channel<T>>> for Sender<T> {
     fn from(ring_buffer: Arc<Channel<T>>) -> Self {
         Self { inner: ring_buffer }
+    }
+}
+
+impl<T> From<Receiver<T>> for Sender<T> {
+    fn from(receiver: Receiver<T>) -> Self {
+        Self {
+            inner: receiver.inner,
+        }
     }
 }
 

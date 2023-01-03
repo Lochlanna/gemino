@@ -1,12 +1,7 @@
-use std::cell::SyncUnsafeCell;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-
-pub trait ChannelValue: Copy + 'static {}
-
-impl<T> ChannelValue for T where T: Copy + 'static {}
 
 #[derive(Error, Debug)]
 pub enum ChannelError {
@@ -29,13 +24,25 @@ pub enum ChannelError {
 }
 
 #[derive(Debug)]
-pub struct Channel<T> {
-    inner: SyncUnsafeCell<Vec<T>>,
+pub(crate) struct Channel<T> {
+    inner: *mut Vec<T>,
     write_head: AtomicIsize,
     read_head: AtomicIsize,
     capacity: isize,
     event: event_listener::Event,
     closed: AtomicBool,
+}
+
+unsafe impl<T> Sync for Channel<T> {}
+unsafe impl<T> Send for Channel<T> {}
+
+impl<T> Drop for Channel<T> {
+    fn drop(&mut self) {
+        unsafe {
+            // let box drop and dealloc for us
+            drop(Box::from_raw(self.inner))
+        }
+    }
 }
 
 impl<T> Channel<T> {
@@ -48,14 +55,15 @@ impl<T> Channel<T> {
             return Err(ChannelError::BufferTooBig);
         }
 
-        let mut inner = Vec::with_capacity(buffer_size);
+        let mut inner = Box::new(Vec::with_capacity(buffer_size));
         unsafe {
             // We manage the data ourselves
             inner.set_len(buffer_size);
         }
+        let inner = Box::into_raw(inner);
 
         Ok(Arc::new(Self {
-            inner: SyncUnsafeCell::new(inner),
+            inner,
             write_head: AtomicIsize::new(0),
             read_head: AtomicIsize::new(-1),
             capacity: buffer_size as isize,
@@ -97,17 +105,15 @@ impl<T> Channel<T> {
 
 impl<T> Channel<T>
 where
-    T: ChannelValue,
+    T: Copy + 'static,
 {
     pub fn send(&self, val: T) -> Result<isize, ChannelError> {
         self.closed()?;
 
-        let ring = self.inner.get();
-
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
         unsafe {
-            (*ring)[index as usize] = val;
+            (*self.inner)[index as usize] = val;
         }
         //busy spin waiting for previous producer threads to catch up
         while self
@@ -128,8 +134,6 @@ where
             return Err(ChannelError::InvalidIndex);
         }
         let mut from_id = from_id as isize;
-
-        let ring = self.inner.get();
 
         let latest_committed_id = self.read_head.load(Ordering::Acquire);
         if latest_committed_id < from_id {
@@ -156,7 +160,7 @@ where
             let res_start = result.len();
             unsafe {
                 result.set_len(res_start + num_elements);
-                let slice_to_copy = &((*ring)[start_idx..(end_idx + 1)]);
+                let slice_to_copy = &((*self.inner)[start_idx..(end_idx + 1)]);
                 result[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
             }
         } else {
@@ -165,10 +169,10 @@ where
             let mut res_start = result.len();
             unsafe {
                 result.set_len(res_start + num_elements);
-                let slice_to_copy = &((*ring)[start_idx..]);
+                let slice_to_copy = &((*self.inner)[start_idx..]);
                 result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
                 res_start += slice_to_copy.len();
-                let slice_to_copy = &((*ring)[..end_idx + 1]);
+                let slice_to_copy = &((*self.inner)[..end_idx + 1]);
                 result[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
             }
         }
@@ -192,7 +196,6 @@ where
         }
         let id = id as isize;
 
-        let ring = self.inner.get();
         let index = id % self.capacity;
 
         let latest_committed_id = self.read_head.load(Ordering::Acquire);
@@ -203,7 +206,7 @@ where
 
         let result;
         unsafe {
-            result = (*ring)[index as usize];
+            result = (*self.inner)[index as usize];
         }
 
         // By checking this after we have read the value we are guaranteeing that the value we read the actual value we wanted
@@ -220,8 +223,6 @@ where
     pub fn get_latest(&self) -> Result<(T, isize), ChannelError> {
         self.closed()?;
 
-        let ring = self.inner.get();
-
         let latest_committed_id = self.read_head.load(Ordering::Acquire);
         if latest_committed_id < 0 {
             return Err(ChannelError::IDNotYetWritten);
@@ -229,7 +230,7 @@ where
         let result;
         unsafe {
             result = Ok((
-                (*ring)[(latest_committed_id % self.capacity) as usize],
+                (*self.inner)[(latest_committed_id % self.capacity) as usize],
                 latest_committed_id,
             ))
         }

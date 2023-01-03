@@ -9,18 +9,18 @@ use std::thread::JoinHandle;
 use test::Bencher;
 
 trait BenchReceiver {
-    type Item: gemino::ChannelValue + Send;
+    type Item: Copy + 'static + Send;
     fn bench_recv(&mut self) -> Self::Item;
 }
 
 trait BenchSender {
-    type Item: gemino::ChannelValue + Send;
+    type Item: Copy + 'static + Send;
     fn bench_send(&self, v: Self::Item);
 }
 
 impl<T> BenchReceiver for Receiver<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -31,7 +31,7 @@ where
 
 impl<T> BenchSender for Sender<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -42,7 +42,7 @@ where
 
 impl<T> BenchReceiver for kanal::Receiver<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -53,7 +53,7 @@ where
 
 impl<T> BenchSender for kanal::Sender<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -64,7 +64,7 @@ where
 
 impl<T> BenchReceiver for std::sync::mpsc::Receiver<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -75,7 +75,7 @@ where
 
 impl<T> BenchSender for std::sync::mpsc::Sender<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -86,7 +86,7 @@ where
 
 impl<T> BenchReceiver for crossbeam_channel::Receiver<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 
@@ -97,7 +97,7 @@ where
 
 impl<T> BenchSender for crossbeam_channel::Sender<T>
 where
-    T: gemino::ChannelValue + Send,
+    T: Copy + 'static + Send,
 {
     type Item = T;
 

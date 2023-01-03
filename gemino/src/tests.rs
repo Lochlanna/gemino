@@ -7,7 +7,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-fn read_sequential<T: ChannelValue + Sync + Send>(
+fn read_sequential<T: Copy + 'static + Sync + Send>(
     mut consume: Receiver<T>,
     starting_at: usize,
     until: usize,
@@ -35,7 +35,7 @@ fn read_sequential<T: ChannelValue + Sync + Send>(
     })
 }
 
-fn write_all<T: ChannelValue + Sync + Send + Send>(
+fn write_all<T: Copy + 'static + Sync + Send + Send>(
     produce: Sender<T>,
     from: &Vec<T>,
     at_rate_of: i32,
