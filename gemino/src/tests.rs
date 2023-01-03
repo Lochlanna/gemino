@@ -13,28 +13,26 @@ fn read_sequential<T: ChannelValue + Sync>(
     until: usize,
     or_time: Duration,
 ) -> JoinHandle<Vec<T>> {
-    let jh = thread::spawn(move || {
+    thread::spawn(move || {
         let mut results = Vec::with_capacity(until - starting_at);
         let mut next = starting_at;
-        let end_time = chrono::Utc::now() + chrono::Duration::from(or_time);
+        let end_time = chrono::Utc::now() + or_time;
         let timeout = or_time != Duration::zero();
 
         while next <= until && (!timeout || chrono::Utc::now() < end_time) {
             match consume.recv() {
                 Ok(value) => results.push(value),
-                Err(err) => match err {
-                    Error::Lagged(skip) => {
+                Err(err) => {
+                    if let Error::Lagged(skip) = err {
                         warn!("falling behind!");
                         next += skip;
                     }
-                    _ => {}
-                },
+                }
             }
             next += 1;
         }
         results
-    });
-    jh
+    })
 }
 
 fn write_all<T: ChannelValue + Sync>(
@@ -44,7 +42,7 @@ fn write_all<T: ChannelValue + Sync>(
     per: Duration,
 ) -> JoinHandle<()> {
     let from = from.clone();
-    let jh = thread::spawn(move || {
+    thread::spawn(move || {
         let delay_micros = if at_rate_of == 0 || per == Duration::zero() {
             Duration::zero()
         } else {
@@ -58,8 +56,7 @@ fn write_all<T: ChannelValue + Sync>(
                     .expect("couldn't get std::time from chrono time"),
             )
         }
-    });
-    jh
+    })
 }
 
 #[test]

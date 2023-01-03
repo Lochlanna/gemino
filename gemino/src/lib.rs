@@ -138,7 +138,7 @@ where
                     let missed = self.next_id - id;
                     Err(Error::Lagged(missed as usize))
                 }
-                _ => panic!("unexpected error while receving from channel: {}", err),
+                _ => panic!("unexpected error while receving from channel: {err}"),
             },
         }
     }
@@ -174,7 +174,7 @@ where
                     let missed = self.next_id - id;
                     Err(Error::Lagged(missed as usize))
                 }
-                _ => panic!("unexpected error while receving from channel: {}", err),
+                _ => panic!("unexpected error while receving from channel: {err}"),
             },
         }
     }
@@ -251,10 +251,7 @@ where
                         Err(Error::Lagged(missed as usize))
                     }
                     ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                    _ => panic!(
-                        "unexpected error while receiving value from channel: {}",
-                        err
-                    ),
+                    _ => panic!("unexpected error while receiving value from channel: {err}"),
                 }
             }
         }
@@ -264,10 +261,7 @@ where
         self.inner.get_latest().or_else(|err| match err {
             ChannelError::Overloaded => Err(Error::Overloaded),
             ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-            _ => panic!(
-                "unexpected data while getting latest value from channel: {}",
-                err
-            ),
+            _ => panic!("unexpected data while getting latest value from channel: {err}"),
         })
     }
 
@@ -443,7 +437,7 @@ pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error>
     let chan = Channel::new(buffer_size).or_else(|err| match err {
         ChannelError::BufferTooSmall => Err(Error::BufferTooSmall),
         ChannelError::BufferTooBig => Err(Error::BufferTooBig),
-        _ => panic!("unexpected error while creating a new channel: {}", err),
+        _ => panic!("unexpected error while creating a new channel: {err}"),
     })?;
     let sender = Sender::from(chan.clone());
     let receiver = Receiver::from(chan);

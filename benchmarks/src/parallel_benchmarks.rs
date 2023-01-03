@@ -110,7 +110,7 @@ fn read_sequential<R: BenchReceiver + 'static + Send>(
     mut consume: R,
     until: usize,
 ) -> JoinHandle<Vec<R::Item>> {
-    let jh = thread::spawn(move || {
+    thread::spawn(move || {
         let mut results = Vec::with_capacity(until);
         let mut next = 0;
 
@@ -120,18 +120,16 @@ fn read_sequential<R: BenchReceiver + 'static + Send>(
             next += 1;
         }
         results
-    });
-    jh
+    })
 }
 
 fn write_all<S: BenchSender + 'static + Send>(produce: S, from: &Vec<S::Item>) -> JoinHandle<()> {
     let from = from.clone();
-    let jh = thread::spawn(move || {
+    thread::spawn(move || {
         for item in from {
             produce.bench_send(item);
         }
-    });
-    jh
+    })
 }
 
 #[bench]
