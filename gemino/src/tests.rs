@@ -362,3 +362,17 @@ fn single_value_batch() {
     assert_eq!(v, 0);
     assert_eq!(vec![42], results);
 }
+
+#[test]
+fn entire_buffer_batch() {
+    let (tx, mut rx) = channel(3).expect("couldn't create channel");
+    tx.send(42).expect("couldnt' send message");
+    tx.send(21).expect("couldnt' send message");
+    tx.send(12).expect("couldnt' send message");
+    let mut results = Vec::new();
+    let v = rx
+        .try_recv_many(&mut results)
+        .expect("failed to get messages");
+    assert_eq!(v, 0);
+    assert_eq!(vec![42, 21, 12], results);
+}

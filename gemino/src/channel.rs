@@ -149,19 +149,19 @@ where
         }
 
         let start_idx = (from_id % self.capacity) as usize;
-        let end_idx = (latest_committed_id % self.capacity) as usize;
+        let end_idx = (latest_committed_id % self.capacity) as usize + 1;
 
-        if end_idx >= start_idx {
-            let num_elements = end_idx - start_idx + 1;
+        if end_idx > start_idx {
+            let num_elements = end_idx - start_idx;
             into.reserve(num_elements);
             let res_start = into.len();
             unsafe {
                 into.set_len(res_start + num_elements);
-                let slice_to_copy = &((*self.inner)[start_idx..(end_idx + 1)]);
+                let slice_to_copy = &((*self.inner)[start_idx..(end_idx)]);
                 into[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
             }
         } else {
-            let num_elements = end_idx + (self.capacity as usize - start_idx) + 1;
+            let num_elements = end_idx + (self.capacity as usize - start_idx);
             into.reserve(num_elements);
             let mut res_start = into.len();
             unsafe {
@@ -169,7 +169,7 @@ where
                 let slice_to_copy = &((*self.inner)[start_idx..]);
                 into[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
                 res_start += slice_to_copy.len();
-                let slice_to_copy = &((*self.inner)[..end_idx + 1]);
+                let slice_to_copy = &((*self.inner)[..end_idx]);
                 into[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
             }
         }
