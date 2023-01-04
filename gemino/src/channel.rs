@@ -22,7 +22,7 @@ pub enum ChannelError {
     #[error("channel has been closed")]
     Closed,
     #[error("cannot request more than buffer size elements at once")]
-    RequestTooLarge,
+    ReadTooLarge,
 }
 
 #[derive(Debug)]
@@ -194,7 +194,7 @@ where
         into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError> {
         if num > self.capacity() {
-            return Err(ChannelError::RequestTooLarge);
+            return Err(ChannelError::ReadTooLarge);
         }
         let original_from = from_id;
         loop {
@@ -219,7 +219,7 @@ where
         into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError> {
         if num > self.capacity() {
-            return Err(ChannelError::RequestTooLarge);
+            return Err(ChannelError::ReadTooLarge);
         }
         loop {
             let listener = self.event.listen();

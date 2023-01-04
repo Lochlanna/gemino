@@ -1,11 +1,14 @@
 //! Gemino is a multi producer, multi consumer channel which allows broadcasting of data from many
-//! producers across multiple threads to many consumers on multiple threads. Its built on top of a Ring Buffer.
+//! producers to many consumers. It's built on top of a Ring Buffer and uses a lock-free design.
+//! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking and reads
+//! do not block if there there is data available.
 //!
-//! Gemino is very fast thanks to the use of memory barriers and the relaxation of message delivery guarantees.
-//! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking.
+//! Gemino is fast thanks to the use of memory barriers and the relaxation of message delivery guarantees.
 //! When the buffer is filled the senders will begin overwriting the oldest entries. This means
 //! that receivers who do not keep up will miss out on messages. It is the responsibility of the developer to
 //! handle this case.
+//!
+//! Gemino provide both a blocking and async API which can be used simultaneously on the same channel.
 //!
 //! Gemino makes use of unsafe.
 
@@ -46,8 +49,9 @@ pub enum Error {
     /// sent may still be received.
     #[error("the channel has been closed")]
     Closed,
+    /// When a bulk read is made it must be less than or equal to the size of the underlying buffer
     #[error("request cannot be filled as the channel capacity is smaller than the requested number of elements")]
-    RequestTooLarge,
+    ReadTooLarge,
 }
 
 /// Retrieves messages from the channel in the order they were sent.
@@ -317,7 +321,7 @@ where
     /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
     /// will also return this error.
     /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
-    /// - [`Error::RequestTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
+    /// - [`Error::ReadTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
     ///
     /// # Example
     ///
@@ -343,7 +347,7 @@ where
             .or_else(|err| match err {
                 ChannelError::IDNotYetWritten => Err(Error::NoNewData),
                 ChannelError::Closed => Err(Error::Closed),
-                ChannelError::RequestTooLarge => Err(Error::RequestTooLarge),
+                ChannelError::ReadTooLarge => Err(Error::ReadTooLarge),
                 _ => panic!("unexpected error while performing bulk read: {err}"),
             })?;
 
@@ -366,7 +370,7 @@ where
     /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
     /// will also return this error.
     /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
-    /// - [`Error::RequestTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
+    /// - [`Error::ReadTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
     ///
     /// # Example
     ///
@@ -404,7 +408,7 @@ where
             .or_else(|err| match err {
                 ChannelError::IDNotYetWritten => Err(Error::NoNewData),
                 ChannelError::Closed => Err(Error::Closed),
-                ChannelError::RequestTooLarge => Err(Error::RequestTooLarge),
+                ChannelError::ReadTooLarge => Err(Error::ReadTooLarge),
                 _ => panic!("unexpected error while performing bulk read: {err}"),
             })?;
 
