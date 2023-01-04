@@ -1,5 +1,5 @@
 # Gemino
-**A fast predictable MPMC channel for rust!**
+**A fast MPMC channel with predictable latency for rust!**
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][doc-badge]][doc-url]
@@ -19,10 +19,10 @@ and offers both a blocking and asynchronous API which can be used at the same ti
 was inspired by [LMAX Disruptor](https://lmax-exchange.github.io/disruptor/) but is simpler and has slightly fewer constraints.
 
 Gemino was developed as a personal learning exercise, but I believe it is good enough to share and use.
-> Gemino is still in very early development, is lacking solid testing and makes use of unsafe. Use at your own risk!
+> Gemino is still in very early development, is lacking rigorous testing and makes use of unsafe. Use at your own risk!
 
 ## Why is it fast?
-1. It's built on a ring buffer which allows essentially wait free writes and wait free reads where data is available.
+1. It's built on a ring buffer which allows essentially wait free writes and wait free reads when data is available.
 2. It's "Lock-free". Gemino uses 2 atomic variables to handle synchronisation of senders and receivers.  
 3. Relaxed constraints. There is no guaranteed delivery of messages over gemino channels. If a receiver doesn't keep up it will miss out
 
@@ -30,9 +30,10 @@ Gemino was developed as a personal learning exercise, but I believe it is good e
 
 * You need a very fast buffered channel.
 * You need both async and blocking access to the same channel.
-* You need multiple receiver and sender but are not concerned with data loss if a receiver falls behind.
-* You need to be able to close the channel and have all other senders and receivers be notified.
-* Your application can make use of bulk reads from receivers (bulk reads are an extremely fast (and memory efficient) way to read messages)
+* You need multiple receivers and senders but are not concerned with data loss if a receiver falls behind.
+* You need to be able to close the channel and have all parties be notified.
+* Your application can make use of bulk reads from receivers. 
+Bulk reads are a fast (and memory efficient) way to read messages compared to one at a time.
 
 ## Why not use Gemino?
 
