@@ -1,7 +1,7 @@
 //! Gemino is a multi producer, multi consumer channel which allows broadcasting of data from many
 //! producers across multiple threads to many consumers on multiple threads. Its built on top of a Ring Buffer.
 //!
-//! Gemino is very fast thanks to the use of memory barriers and the relaxation of message delivery guarantees
+//! Gemino is very fast thanks to the use of memory barriers and the relaxation of message delivery guarantees.
 //! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking.
 //! When the buffer is filled the senders will begin overwriting the oldest entries. This means
 //! that receivers who do not keep up will miss out on messages. It is the responsibility of the developer to
