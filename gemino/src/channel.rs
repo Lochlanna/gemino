@@ -107,7 +107,7 @@ impl<T> Channel<T> {
 
 impl<T> Channel<T>
 where
-    T: Copy + 'static,
+    T: 'static,
 {
     pub fn send(&self, val: T) -> Result<isize, ChannelError> {
         self.closed()?;
@@ -126,7 +126,12 @@ where
         self.event.notify(usize::MAX);
         Ok(id)
     }
+}
 
+impl<T> Channel<T>
+where
+    T: Copy + 'static,
+{
     pub fn read_batch_from(
         &self,
         from_id: usize,

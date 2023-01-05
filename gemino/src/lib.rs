@@ -649,7 +649,7 @@ impl<T> Sender<T> {
 
 impl<T> Sender<T>
 where
-    T: Copy + 'static,
+    T: 'static,
 {
     /// Put a new value into the channel. This function will almost never block. The underlying implementation
     /// means that writes have to be finalised in order meaning that if thread a then b writes to the channel.
@@ -746,7 +746,7 @@ impl<T> From<Receiver<T>> for Sender<T> {
 /// # Ok(())
 /// # }
 /// ```
-pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
+pub fn channel<T: Copy + 'static>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
     let chan = Channel::new(buffer_size).or_else(|err| match err {
         ChannelError::BufferTooSmall => Err(Error::BufferTooSmall),
         ChannelError::BufferTooBig => Err(Error::BufferTooBig),
