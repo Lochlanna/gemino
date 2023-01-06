@@ -1,9 +1,7 @@
 //! Gemino is a multi producer, multi consumer channel which allows broadcasting of data from many
-//! producers to many consumers. It's built on top of a Ring Buffer and uses a lock-free design.
-//! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking and reads
-//! do not block if there there is data available.
+//! producers to many consumers. It's built on top of a Ring Buffer.
+//! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking
 //!
-//! Gemino is fast thanks to the use of memory barriers and the relaxation of message delivery guarantees.
 //! When the buffer is filled the senders will begin overwriting the oldest entries. This means
 //! that receivers who do not keep up will miss out on messages. It is the responsibility of the developer to
 //! handle this case.
@@ -598,9 +596,9 @@ where
     /// # use anyhow::Result;
     /// # fn main() -> Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?;
-    /// let v = rx.recv()?;
-    /// assert_eq!(v, 42);
+    /// tx.send(String::from("hello world"))?;
+    /// let v = rx.recv_cloned()?;
+    /// assert_eq!(v, "hello world");
     /// # Ok(())
     /// # }
     /// ```
@@ -642,18 +640,18 @@ where
     /// # use anyhow::Result;
     /// # fn main() -> Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?;
-    /// let v = rx.recv_before(Duration::from_millis(5))?;
-    /// assert_eq!(v, 42);
+    /// tx.send(String::from("hello world"))?;
+    /// let v = rx.recv_before_cloned(Duration::from_millis(5))?;
+    /// assert_eq!(v, "hello world");
     /// std::thread::spawn(move ||{
     ///     std::thread::sleep(Duration::from_millis(6));
-    ///     tx.send(22).expect("cannot send");
+    ///     tx.send(String::from("hello world b")).expect("cannot send");
     /// });
-    /// let fail = rx.recv_before(Duration::from_millis(5));
+    /// let fail = rx.recv_before_cloned(Duration::from_millis(5));
     /// assert!(fail.is_err());
     /// assert!(matches!(fail.err().unwrap(), Error::NoNewData));
-    /// let v = rx.recv_before(Duration::from_millis(30))?;
-    /// assert_eq!(v, 22);
+    /// let v = rx.recv_before_cloned(Duration::from_millis(30))?;
+    /// assert_eq!(v, "hello world b");
     /// # Ok(())
     /// # }
     /// ```
@@ -696,9 +694,9 @@ where
     /// # use anyhow::Result;
     /// # async fn test()->Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?;
-    /// let v = rx.recv_async().await?;
-    /// assert_eq!(v, 42);
+    /// tx.send(String::from("hello world"))?;
+    /// let v = rx.recv_async_cloned().await?;
+    /// assert_eq!(v, "hello world");
     /// # Ok(())
     /// # }
     /// # fn main() -> Result<()> {
@@ -746,16 +744,16 @@ where
     /// # use anyhow::Result;
     /// # fn main() -> Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?; // This will be overwritten because the buffer size is only 2
-    /// tx.send(12)?;
-    /// tx.send(21)?;
+    /// tx.send(String::from("42"))?; // This will be overwritten because the buffer size is only 2
+    /// tx.send(String::from("12"))?;
+    /// tx.send(String::from("21"))?;
     /// let mut results = Vec::new();
-    /// let v = rx.try_recv_many(&mut results)?;
+    /// let v = rx.try_recv_many_cloned(&mut results)?;
     /// assert_eq!(v, 1); // We missed out on one message
-    /// assert_eq!(vec![12,21], results);
-    /// tx.send(5)?;
-    /// let v = rx.try_recv()?; // The receiver is now caught up to the latest value
-    /// assert_eq!(v, 5);
+    /// assert_eq!(vec!["12","21"], results);
+    /// tx.send(String::from("5"))?;
+    /// let v = rx.try_recv_cloned()?; // The receiver is now caught up to the latest value
+    /// assert_eq!(v, "5");
     /// # Ok(())
     /// # }
     /// ```
@@ -797,13 +795,13 @@ where
     /// # use anyhow::Result;
     /// # fn main() -> Result<()> {
     /// let (tx, mut rx) = channel(3)?;
-    /// tx.send(42)?;
-    /// tx.send(12)?;
-    /// tx.send(21)?;
+    /// tx.send(String::from("42"))?;
+    /// tx.send(String::from("12"))?;
+    /// tx.send(String::from("21"))?;
     /// let mut results = Vec::new();
-    /// let v = rx.recv_at_least(2, &mut results)?;
+    /// let v = rx.recv_at_least_cloned(2, &mut results)?;
     /// assert_eq!(v, 0);
-    /// assert_eq!(vec![42, 12,21], results);
+    /// assert_eq!(vec!["42", "12", "21"], results);
     /// # Ok(())
     /// # }
     /// ```
@@ -851,15 +849,15 @@ where
     /// # use std::time::Duration;
     /// # async fn test() -> Result<()> {
     /// let (tx, mut rx) = channel(3)?;
-    /// tx.send(42)?;
-    /// tx.send(12)?;
+    /// tx.send(String::from("42"))?;
+    /// tx.send("12".into())?;
     /// let mut results = Vec::new();
-    /// let fail = tokio::time::timeout(Duration::from_millis(5), rx.recv_at_least_async(3, &mut results)).await;
+    /// let fail = tokio::time::timeout(Duration::from_millis(5), rx.recv_at_least_async_cloned(3, &mut results)).await;
     /// assert!(fail.is_err()); // timeout because it was waiting for 3 elements on the array
-    /// tx.send(21)?;
-    /// let v = rx.recv_at_least_async(3, &mut results).await?;
+    /// tx.send("21".into())?;
+    /// let v = rx.recv_at_least_async_cloned(3, &mut results).await?;
     /// assert_eq!(v, 0);
-    /// assert_eq!(vec![42, 12, 21], results);
+    /// assert_eq!(vec!["42", "12", "21"], results);
     /// # Ok(())
     /// # }
     /// # fn main() -> Result<()> {
@@ -913,10 +911,10 @@ where
     /// # use anyhow::Result;
     /// # fn main() -> Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?;
-    /// let v = rx.try_recv()?;
-    /// assert_eq!(v, 42);
-    /// assert!(rx.try_recv().is_err());
+    /// tx.send("42".to_string())?;
+    /// let v = rx.try_recv_cloned()?;
+    /// assert_eq!(v, "42");
+    /// assert!(rx.try_recv_cloned().is_err());
     /// # Ok(())
     /// # }
     /// ```
@@ -975,15 +973,15 @@ where
     /// # use anyhow::Result;
     /// # fn main() -> Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?;
-    /// let v = rx.latest()?;
-    /// assert_eq!(v, 42);
+    /// tx.send("42".to_string())?;
+    /// let v = rx.latest_cloned()?;
+    /// assert_eq!(v, "42");
     /// thread::spawn(move || {
     ///     thread::sleep(Duration::from_secs_f32(0.1));
-    ///     tx.send(72).expect("couldn't send");
+    ///     tx.send("72".into()).expect("couldn't send");
     /// });
-    /// let v = rx.latest()?;
-    /// assert_eq!(v, 72);
+    /// let v = rx.latest_cloned()?;
+    /// assert_eq!(v, "72");
     /// # Ok(())
     /// # }
     /// ```
@@ -1019,15 +1017,15 @@ where
     /// # use anyhow::Result;
     /// # async fn test() -> Result<()> {
     /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(42)?;
-    /// let v = rx.latest_async().await?;
-    /// assert_eq!(v, 42);
+    /// tx.send("42".to_string())?;
+    /// let v = rx.latest_async_cloned().await?;
+    /// assert_eq!(v, "42");
     /// tokio::spawn(async move {
     ///     tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
-    ///     tx.send(72).expect("couldn't send");
+    ///     tx.send("72".to_string()).expect("couldn't send");
     /// });
-    /// let v = rx.latest_async().await?;
-    /// assert_eq!(v, 72);
+    /// let v = rx.latest_async_cloned().await?;
+    /// assert_eq!(v, "72");
     /// # Ok(())
     /// # }
     ///
