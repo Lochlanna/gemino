@@ -7,8 +7,8 @@ readme = "../README.md"
 repository = "https://github.com/Lochlanna/gemino"
 homepage = "https://github.com/Lochlanna/gemino"
 license = "MIT"
-keywords = ["mpmc", "async", "lock-free", "channel", "broadcast"]
-categories = ["concurrency", "data-structures","asynchronous"]
+keywords = ["mpmc", "async", "channel", "broadcast"]
+categories = ["concurrency", "data-structures", "asynchronous"]
 exclude = ["/.*"]
 
 [dependencies]
