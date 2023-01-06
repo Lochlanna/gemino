@@ -148,37 +148,43 @@ where
     T: 'static,
 {
     pub fn send(&self, mut val: T) -> Result<isize, ChannelError> {
-        if self.closed.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);
         }
 
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
 
-        #[cfg(feature = "clone")]
-        let write_lock = self.cell_locks[index as usize].write();
+        {
+            #[cfg(feature = "clone")]
+            let write_lock;
+            unsafe  {
+                write_lock = self.cell_locks.get_unchecked(index as usize).write();
+            }
 
-        let pos;
-        unsafe {
-            pos = (*self.inner).get_unchecked_mut(index as usize);
-        }
-        if id < self.capacity {
 
-            std::mem::swap(pos, &mut val);
-            //val now points to uninitialised memory
-            std::mem::forget(val);
-        } else {
-            *pos = val;
+            let pos;
+            unsafe {
+                pos = (*self.inner).get_unchecked_mut(index as usize);
+            }
+            if id < self.capacity {
+                unsafe  {
+                    std::ptr::copy_nonoverlapping(&val, pos, 1);
+                }
+                std::mem::forget(val);
+                // std::mem::swap(pos, &mut val);
+                // //val now points to uninitialised memory
+                // std::mem::forget(val);
+            } else {
+                *pos = val;
+            }
         }
         //busy spin waiting for previous producer threads to catch up
         while self
             .read_head
-            .compare_exchange(id - 1, id, Ordering::Release, Ordering::Acquire)
+            .compare_exchange_weak(id - 1, id, Ordering::Release, Ordering::Acquire)
             .is_err()
         {}
-
-        #[cfg(feature = "clone")]
-        drop(write_lock);
 
         self.event.notify(usize::MAX);
         Ok(id)
