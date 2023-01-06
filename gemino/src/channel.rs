@@ -126,16 +126,19 @@ impl<T> Channel<T> {
         self.capacity as usize
     }
 
+    #[inline(always)]
     fn closed(&self) -> Result<(), ChannelError> {
-        if self.closed.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);
         }
         Ok(())
     }
 
+    #[inline(always)]
     pub fn is_closed(&self) -> bool {
         self.closed().is_err()
     }
+
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
         // Notify will cause all waiting/blocking threads to wake up and cancel
@@ -155,6 +158,7 @@ where
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
 
+        let mut should_drop = true;
         {
             #[cfg(feature = "clone")]
             let write_lock;
@@ -171,12 +175,13 @@ where
                 unsafe  {
                     std::ptr::copy_nonoverlapping(&val, pos, 1);
                 }
-                std::mem::forget(val);
-                // std::mem::swap(pos, &mut val);
-                // //val now points to uninitialised memory
-                // std::mem::forget(val);
+                should_drop = false;
             } else {
-                *pos = val;
+                // use swap rather than move because it allows us to run drop after releasing locks
+                // and freeing other threads to continue while we run the potentially long running
+                // drop function
+                std::mem::swap(pos, &mut val);
+                //val now contains the old value
             }
         }
         //busy spin waiting for previous producer threads to catch up
@@ -187,6 +192,11 @@ where
         {}
 
         self.event.notify(usize::MAX);
+        if should_drop {
+            drop(val)
+        } else {
+            std::mem::forget(val);
+        }
         Ok(id)
     }
 }
