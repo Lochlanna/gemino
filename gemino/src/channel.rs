@@ -25,22 +25,6 @@ pub enum ChannelError {
     ReadTooLarge,
 }
 
-#[repr(transparent)]
-#[derive(Debug)]
-struct SyncUnsafeCell<T: ?Sized>(T);
-impl<T: ?Sized> SyncUnsafeCell<T> {
-    /// Gets a mutable pointer to the wrapped value.
-    ///
-    /// See [`UnsafeCell::get`] for details.
-    #[inline]
-    pub const fn raw_get(this: *const Self) -> *mut T {
-        // We can just cast the pointer from `SyncUnsafeCell<T>` to `T` because
-        // of #[repr(transparent)] on both SyncUnsafeCell and UnsafeCell.
-        // See UnsafeCell::raw_get.
-        this as *const T as *mut T
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Channel<T> {
     inner: *mut Vec<T>,
@@ -473,7 +457,7 @@ where
 
         oldest = self.oldest();
         while from_id < oldest {
-            // we have to do this to ensure a wirter didn't overtake us before we could take out the lock.
+            // we have to do this to ensure a writer didn't overtake us before we could take out the lock.
             // inside this loop we play catch up if that happened. This will be expensive!
             from_id = oldest;
             start_idx = (from_id % self.capacity) as usize;
