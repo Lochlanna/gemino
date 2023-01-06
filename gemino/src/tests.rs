@@ -376,3 +376,58 @@ fn entire_buffer_batch() {
     assert_eq!(v, 0);
     assert_eq!(vec![42, 21, 12], results);
 }
+
+
+#[test]
+fn string_test() {
+    let chan = Channel::new(1).expect("couldn't create channel");
+    let input = String::from("hello");
+    chan.send(input.clone()).expect("couldnt' send message");
+    let s = chan.try_get_cloned(0).expect("couldn't get the value");
+    let s2 = chan.get_latest_cloned().expect("couldn't get the value").0;
+    assert_eq!(s, input);
+    assert_eq!(s2, input);
+}
+
+#[test]
+fn struct_test() {
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    struct TestMe {
+        a: u8,
+        b: String
+    }
+    let t = TestMe {
+        a: 42,
+        b: String::from("hello world")
+    };
+    let chan = Channel::new(1).expect("couldn't create channel");
+    chan.send(t.clone()).expect("couldnt' send message");
+    let res = chan.try_get_cloned(0).expect("couldn't get the value");
+    assert_eq!(t, res);
+}
+
+
+#[test]
+fn drop_test() {
+    let p = Arc::new(3);
+    let p1 = Arc::new(3);
+    let p2 = Arc::new(3);
+    {
+        let (tx, _) = channel(2).expect("couldn't create channel");
+        tx.send(p.clone()).expect("couldnt' send message");
+        tx.send(p1.clone()).expect("couldnt' send message");
+        tx.send(p2.clone()).expect("couldnt' send message");
+        assert_eq!(Arc::strong_count(&p), 1);
+        assert_eq!(Arc::strong_count(&p1), 2);
+        assert_eq!(Arc::strong_count(&p2), 2);
+    }
+    assert_eq!(Arc::strong_count(&p), 1);
+    assert_eq!(Arc::strong_count(&p1), 1);
+    assert_eq!(Arc::strong_count(&p2), 1);
+    {
+        let (tx, _) = channel(5).expect("couldn't create channel");
+        tx.send(p.clone()).expect("couldnt' send message");
+        assert_eq!(Arc::strong_count(&p), 2);
+    }
+    assert_eq!(Arc::strong_count(&p), 1);
+}

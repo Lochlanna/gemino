@@ -25,6 +25,22 @@ pub enum ChannelError {
     ReadTooLarge,
 }
 
+#[repr(transparent)]
+#[derive(Debug)]
+struct SyncUnsafeCell<T: ?Sized>(T);
+impl<T: ?Sized> SyncUnsafeCell<T> {
+    /// Gets a mutable pointer to the wrapped value.
+    ///
+    /// See [`UnsafeCell::get`] for details.
+    #[inline]
+    pub const fn raw_get(this: *const Self) -> *mut T {
+        // We can just cast the pointer from `SyncUnsafeCell<T>` to `T` because
+        // of #[repr(transparent)] on both SyncUnsafeCell and UnsafeCell.
+        // See UnsafeCell::raw_get.
+        this as *const T as *mut T
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Channel<T> {
     inner: *mut Vec<T>,
@@ -33,6 +49,8 @@ pub(crate) struct Channel<T> {
     capacity: isize,
     event: event_listener::Event,
     closed: AtomicBool,
+    #[cfg(feature = "clone")]
+    cell_locks: Vec<parking_lot::RwLock<()>>
 }
 
 unsafe impl<T> Sync for Channel<T> {}
@@ -40,9 +58,18 @@ unsafe impl<T> Send for Channel<T> {}
 
 impl<T> Drop for Channel<T> {
     fn drop(&mut self) {
+        //Let box handle dropping and memory cleanup for us when it goes out of scope here
+        let mut inner;
         unsafe {
-            // let box drop and dealloc for us
-            drop(Box::from_raw(self.inner))
+            inner = Box::from_raw(self.inner);
+        }
+        let length = (self.read_head.load(Ordering::Acquire) + 1) as usize;
+        if length < self.capacity as usize {
+            // need to restore the correct length otherwise it may try to run drop
+            // on uninitialised memory
+            unsafe {
+                inner.set_len(length);
+            }
         }
     }
 }
@@ -64,6 +91,15 @@ impl<T> Channel<T> {
         }
         let inner = Box::into_raw(inner);
 
+        #[cfg(feature = "clone")]
+        let mut cell_locks;
+        #[cfg(feature = "clone")]
+        {
+            cell_locks = Vec::new();
+            cell_locks.resize_with(buffer_size, Default::default);
+        }
+
+
         Ok(Arc::new(Self {
             inner,
             write_head: AtomicIsize::new(0),
@@ -71,6 +107,8 @@ impl<T> Channel<T> {
             capacity: buffer_size as isize,
             event: event_listener::Event::new(),
             closed: AtomicBool::new(false),
+            #[cfg(feature = "clone")]
+            cell_locks
         }))
     }
 
@@ -109,13 +147,28 @@ impl<T> Channel<T>
 where
     T: 'static,
 {
-    pub fn send(&self, val: T) -> Result<isize, ChannelError> {
-        self.closed()?;
+    pub fn send(&self, mut val: T) -> Result<isize, ChannelError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(ChannelError::Closed);
+        }
 
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
+
+        #[cfg(feature = "clone")]
+        let write_lock = self.cell_locks[index as usize].write();
+
+        let pos;
         unsafe {
-            (*self.inner)[index as usize] = val;
+            pos = (*self.inner).get_unchecked_mut(index as usize);
+        }
+        if id < self.capacity {
+
+            std::mem::swap(pos, &mut val);
+            //val now points to uninitialised memory
+            std::mem::forget(val);
+        } else {
+            *pos = val;
         }
         //busy spin waiting for previous producer threads to catch up
         while self
@@ -123,6 +176,10 @@ where
             .compare_exchange(id - 1, id, Ordering::Release, Ordering::Acquire)
             .is_err()
         {}
+
+        #[cfg(feature = "clone")]
+        drop(write_lock);
+
         self.event.notify(usize::MAX);
         Ok(id)
     }
@@ -369,5 +426,166 @@ where
     pub async fn read_next(&self) -> (T, isize) {
         self.event.listen().await;
         self.get_latest().unwrap()
+    }
+}
+
+#[cfg(feature = "clone")]
+impl<T> Channel<T> where T: Clone {
+    pub fn read_batch_from_cloned(
+        &self,
+        from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
+        todo!()
+    }
+    pub fn read_at_least_cloned(
+        &self,
+        num: usize,
+        mut from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
+        todo!()
+    }
+    pub async fn read_at_least_async_cloned(
+        &self,
+        num: usize,
+        mut from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
+        todo!()
+    }
+    pub fn try_get_cloned(&self, id: usize) -> Result<T, ChannelError> {
+        if id > isize::MAX as usize {
+            return Err(ChannelError::InvalidIndex);
+        }
+        let id = id as isize;
+
+        let index = id % self.capacity;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 || id > latest_committed_id {
+            self.closed()?;
+            return Err(ChannelError::IDNotYetWritten);
+        }
+
+        let _read_lock = self.cell_locks[index as usize].read();
+
+        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
+        // Since we have the lock and we know this will not change we might as well early out
+        // as opposed to the way copy works which detects a corrupted read
+        let oldest = self.oldest();
+        if id < oldest {
+            return Err(ChannelError::IdTooOld(oldest));
+        }
+
+        unsafe {
+            Ok((*self.inner)[index as usize].clone())
+        }
+    }
+
+    pub fn get_latest_cloned(&self) -> Result<(T, isize), ChannelError> {
+        self.closed()?;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 {
+            return Err(ChannelError::IDNotYetWritten);
+        }
+        let index = (latest_committed_id % self.capacity) as usize;
+
+        let _read_lock = self.cell_locks[index].read();
+
+        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
+        // Since we have the lock and we know this will not change we might as well early out
+        // as opposed to the way copy works which detects a corrupted read
+        let oldest = self.oldest();
+        if latest_committed_id < oldest {
+            // The only way that this should be possible is if the buffer is being written to so quickly
+            // that it is completely overwritten before the lock can be taken out
+            // With a very small buffer this might be possible although this check is probably
+            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
+            return Err(ChannelError::Overloaded);
+        }
+
+        unsafe {
+            Ok((
+                (*self.inner)[index].clone(),
+                latest_committed_id,
+            ))
+        }
+
+    }
+
+    pub fn get_blocking_cloned(&self, id: usize) -> Result<T, ChannelError> {
+        let immediate = self.try_get_cloned(id);
+        if let Err(err) = &immediate {
+            if !matches!(err, ChannelError::IDNotYetWritten) {
+                return immediate;
+            }
+        } else {
+            return immediate;
+        }
+        // this could be better than a spin if the update rate is slow
+        // create the listener then check again as the creation can take a long time!
+        while self.read_head.load(Ordering::Acquire) < id as isize {
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as isize {
+                listener.wait();
+            }
+            self.closed()?
+        }
+        self.try_get_cloned(id)
+    }
+
+    pub fn get_blocking_before_cloned(
+        &self,
+        id: usize,
+        before: std::time::Instant,
+    ) -> Result<T, ChannelError> {
+        let immediate = self.try_get_cloned(id);
+        if let Err(err) = &immediate {
+            if !matches!(err, ChannelError::IDNotYetWritten) {
+                return immediate;
+            }
+        } else {
+            return immediate;
+        }
+
+        while self.read_head.load(Ordering::Acquire) < id as isize {
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as isize
+                && !listener.wait_deadline(before)
+            {
+                return Err(ChannelError::Timeout);
+            }
+            self.closed()?;
+        }
+
+        self.try_get_cloned(id)
+    }
+
+    pub async fn get_cloned(&self, id: usize) -> Result<T, ChannelError> {
+        let immediate = self.try_get_cloned(id);
+        if let Err(err) = &immediate {
+            if !matches!(err, ChannelError::IDNotYetWritten) {
+                return immediate;
+            }
+        } else {
+            return immediate;
+        }
+
+        while self.read_head.load(Ordering::Acquire) < id as isize {
+            let listener = self.event.listen();
+            if self.read_head.load(Ordering::Acquire) < id as isize {
+                listener.await;
+            }
+            self.closed()?;
+        }
+
+        Ok(self.try_get_cloned(id).unwrap())
+    }
+
+    pub async fn read_next_cloned(&self) -> (T, isize) {
+        self.event.listen().await;
+        self.get_latest_cloned().unwrap()
     }
 }
