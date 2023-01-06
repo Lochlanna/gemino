@@ -1,5 +1,5 @@
 # Gemino
-**A fast MPMC channel with predictable latency for rust!**
+**A MPMC channel**
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][doc-badge]][doc-url]
@@ -15,25 +15,15 @@
 ## What is Gemino
 Gemino is an implementation of a multi producer multi consumer (MPMC) broadcasting channel where all receivers have the 
 opportunity to receive all messages sent by all producers. The library has been designed with speed and ease of use in mind
-and offers both a blocking and asynchronous API which can be used at the same time. The design of the underlying data structure 
-was inspired by [LMAX Disruptor](https://lmax-exchange.github.io/disruptor/) but is simpler and has slightly fewer constraints.
+and offers both a blocking and asynchronous API which can be used at the same time.
 
 Gemino was developed as a personal learning exercise, but I believe it is good enough to share and use.
 > Gemino is still in very early development, is lacking rigorous testing and makes use of unsafe. Use at your own risk!
 
-## Why is it fast?
-1. It's built on a ring buffer which allows essentially wait free writes and wait free reads when data is available.
-2. It's "Lock-free". Gemino uses 2 atomic variables to handle synchronisation of senders and receivers.  
-3. Relaxed constraints. There is no guaranteed delivery of messages over gemino channels. If a receiver doesn't keep up it will miss out
-
 ## Why use Gemino?
-
-* You need a very fast buffered channel.
 * You need both async and blocking access to the same channel.
 * You need multiple receivers and senders but are not concerned with data loss if a receiver falls behind.
 * You need to be able to close the channel and have all parties be notified.
-* Your application can make use of bulk reads from receivers. 
-Bulk reads are a fast (and memory efficient) way to read messages compared to one at a time.
 
 ## Why not use Gemino?
 
