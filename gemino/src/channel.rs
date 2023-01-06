@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
+use std::mem::MaybeUninit;
 
 #[derive(Error, Debug)]
 pub enum ChannelError {
@@ -158,6 +159,13 @@ where
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
 
+        let pos;
+        unsafe {
+            pos = (*self.inner).get_unchecked_mut(index as usize);
+        }
+
+        //allocate old value here so that we don't run the drop function while we have any locks
+        let mut _old_value: T;
         {
             #[cfg(feature = "clone")]
             let _write_lock;
@@ -166,23 +174,14 @@ where
                 _write_lock = self.cell_locks.get_unchecked(index as usize).write();
             }
 
-            let pos;
-            unsafe {
-                pos = (*self.inner).get_unchecked_mut(index as usize);
-            }
             if id < self.capacity {
                 unsafe  {
                     std::ptr::copy_nonoverlapping(&val, pos, 1);
                 }
-                //val is now corrupted so don't run the destructor. It will still be cleaned up since
-                // it's on the stack
+                // val is now corrupted so forget it and don't run drop
                 std::mem::forget(val);
             } else {
-                // use swap rather than move because it allows us to run drop after releasing locks
-                // and freeing other threads to continue sooner while we run the potentially long
-                // running drop function
-                std::mem::swap(pos, &mut val);
-                //val now contains the old value which will be dropped when the function exists
+                _old_value = std::mem::replace(pos, val);
             }
         }
         //spin waiting for previous producer threads to catch up
