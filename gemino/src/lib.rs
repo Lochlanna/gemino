@@ -577,7 +577,10 @@ where
 }
 
 #[cfg(feature = "clone")]
-impl<T> Receiver<T> where T: Clone + 'static {
+impl<T> Receiver<T>
+where
+    T: Clone + 'static,
+{
     /// Receives the next value from the channel. This function will block until a new value is put onto the
     /// channel or the channel is closed; even if there are no senders.
     ///
@@ -757,14 +760,14 @@ impl<T> Receiver<T> where T: Clone + 'static {
     /// # }
     /// ```
     pub fn try_recv_many_cloned(&mut self, result: &mut Vec<T>) -> Result<usize, Error> {
-        let (first_id, last_id) =
-            self.inner
-                .read_batch_from_cloned(self.next_id, result)
-                .or_else(|err| match err {
-                    ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                    ChannelError::Closed => Err(Error::Closed),
-                    _ => panic!("unexpected error while performing bulk read: {err}"),
-                })?;
+        let (first_id, last_id) = self
+            .inner
+            .read_batch_from_cloned(self.next_id, result)
+            .or_else(|err| match err {
+                ChannelError::IDNotYetWritten => Err(Error::NoNewData),
+                ChannelError::Closed => Err(Error::Closed),
+                _ => panic!("unexpected error while performing bulk read: {err}"),
+            })?;
 
         let mut missed = 0;
         if first_id as usize > self.next_id {
@@ -804,7 +807,11 @@ impl<T> Receiver<T> where T: Clone + 'static {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn recv_at_least_cloned(&mut self, num: usize, result: &mut Vec<T>) -> Result<usize, Error> {
+    pub fn recv_at_least_cloned(
+        &mut self,
+        num: usize,
+        result: &mut Vec<T>,
+    ) -> Result<usize, Error> {
         let (first_id, last_id) = self
             .inner
             .read_at_least_cloned(num, self.next_id, result)

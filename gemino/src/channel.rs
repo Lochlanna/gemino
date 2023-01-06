@@ -2,7 +2,6 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use std::mem::MaybeUninit;
 
 #[derive(Error, Debug)]
 pub enum ChannelError {
@@ -51,7 +50,7 @@ pub(crate) struct Channel<T> {
     event: event_listener::Event,
     closed: AtomicBool,
     #[cfg(feature = "clone")]
-    cell_locks: Vec<parking_lot::RwLock<()>>
+    cell_locks: Vec<parking_lot::RwLock<()>>,
 }
 
 unsafe impl<T> Sync for Channel<T> {}
@@ -100,7 +99,6 @@ impl<T> Channel<T> {
             cell_locks.resize_with(buffer_size, Default::default);
         }
 
-
         Ok(Arc::new(Self {
             inner,
             write_head: AtomicIsize::new(0),
@@ -109,7 +107,7 @@ impl<T> Channel<T> {
             event: event_listener::Event::new(),
             closed: AtomicBool::new(false),
             #[cfg(feature = "clone")]
-            cell_locks
+            cell_locks,
         }))
     }
 
@@ -151,7 +149,7 @@ impl<T> Channel<T>
 where
     T: 'static,
 {
-    pub fn send(&self, mut val: T) -> Result<isize, ChannelError> {
+    pub fn send(&self, val: T) -> Result<isize, ChannelError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);
         }
@@ -170,12 +168,12 @@ where
             #[cfg(feature = "clone")]
             let _write_lock;
             #[cfg(feature = "clone")]
-            unsafe  {
+            unsafe {
                 _write_lock = self.cell_locks.get_unchecked(index as usize).write();
             }
 
             if id < self.capacity {
-                unsafe  {
+                unsafe {
                     std::ptr::copy_nonoverlapping(&val, pos, 1);
                 }
                 // val is now corrupted so forget it and don't run drop
@@ -440,13 +438,84 @@ where
 }
 
 #[cfg(feature = "clone")]
-impl<T> Channel<T> where T: Clone {
+impl<T> Channel<T>
+where
+    T: Clone,
+{
     pub fn read_batch_from_cloned(
         &self,
         from_id: usize,
         into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError> {
-        todo!()
+        if from_id > isize::MAX as usize {
+            return Err(ChannelError::InvalidIndex);
+        }
+        let mut from_id = from_id as isize;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < from_id {
+            self.closed()?;
+            return Err(ChannelError::IDNotYetWritten);
+        }
+
+        let mut oldest = self.oldest();
+        if from_id < oldest {
+            from_id = oldest
+        }
+
+        let mut start_idx = (from_id % self.capacity) as usize;
+        let end_idx = (latest_committed_id % self.capacity) as usize + 1;
+
+        let mut _read_lock;
+        unsafe {
+            _read_lock = self.cell_locks.get_unchecked(start_idx).read();
+        }
+
+        oldest = self.oldest();
+        while from_id < oldest {
+            // we have to do this to ensure a wirter didn't overtake us before we could take out the lock.
+            // inside this loop we play catch up if that happened. This will be expensive!
+            from_id = oldest;
+            start_idx = (from_id % self.capacity) as usize;
+            let new_lock;
+            unsafe {
+                new_lock = self.cell_locks.get_unchecked(start_idx).read();
+            }
+            _read_lock = new_lock;
+            oldest = self.oldest();
+        }
+
+        if from_id > latest_committed_id {
+            // This could happen if we don't catch the writers
+            return Err(ChannelError::Overloaded);
+        }
+
+        // now that we have the lock a writer cannot overtake us so anything up until latest
+        // committed id is safe to read
+
+        if end_idx > start_idx {
+            let num_elements = end_idx - start_idx;
+            into.reserve(num_elements);
+            let res_start = into.len();
+            unsafe {
+                into.set_len(res_start + num_elements);
+                let slice_to_copy = &((*self.inner)[start_idx..(end_idx)]);
+                into[res_start..(res_start + num_elements)].clone_from_slice(slice_to_copy);
+            }
+        } else {
+            let num_elements = end_idx + (self.capacity as usize - start_idx);
+            into.reserve(num_elements);
+            let mut res_start = into.len();
+            unsafe {
+                into.set_len(res_start + num_elements);
+                let slice_to_copy = &((*self.inner)[start_idx..]);
+                into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
+                res_start += slice_to_copy.len();
+                let slice_to_copy = &((*self.inner)[..end_idx]);
+                into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
+            }
+        }
+        Ok((from_id, latest_committed_id))
     }
     pub fn read_at_least_cloned(
         &self,
@@ -454,7 +523,23 @@ impl<T> Channel<T> where T: Clone {
         mut from_id: usize,
         into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError> {
-        todo!()
+        if num > self.capacity() {
+            return Err(ChannelError::ReadTooLarge);
+        }
+        let original_from = from_id;
+        loop {
+            let listener = self.event.listen();
+            let oldest = self.oldest();
+            if from_id < oldest as usize {
+                from_id = oldest as usize;
+            }
+            let latest = self.read_head.load(Ordering::Acquire);
+            let num_available = (latest as usize) - from_id + 1;
+            if num_available >= num {
+                return self.read_batch_from_cloned(original_from, into);
+            }
+            listener.wait();
+        }
     }
     pub async fn read_at_least_async_cloned(
         &self,
@@ -462,7 +547,22 @@ impl<T> Channel<T> where T: Clone {
         mut from_id: usize,
         into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError> {
-        todo!()
+        if num > self.capacity() {
+            return Err(ChannelError::ReadTooLarge);
+        }
+        loop {
+            let listener = self.event.listen();
+            let oldest = self.oldest();
+            if from_id < oldest as usize {
+                from_id = oldest as usize;
+            }
+            let latest = self.read_head.load(Ordering::Acquire);
+            let num_available = (latest as usize) - from_id + 1;
+            if num_available >= num {
+                return self.read_batch_from_cloned(from_id, into);
+            }
+            listener.await;
+        }
     }
     pub fn try_get_cloned(&self, id: usize) -> Result<T, ChannelError> {
         if id > isize::MAX as usize {
@@ -488,9 +588,7 @@ impl<T> Channel<T> where T: Clone {
             return Err(ChannelError::IdTooOld(oldest));
         }
 
-        unsafe {
-            Ok((*self.inner)[index as usize].clone())
-        }
+        unsafe { Ok((*self.inner)[index as usize].clone()) }
     }
 
     pub fn get_latest_cloned(&self) -> Result<(T, isize), ChannelError> {
@@ -516,13 +614,7 @@ impl<T> Channel<T> where T: Clone {
             return Err(ChannelError::Overloaded);
         }
 
-        unsafe {
-            Ok((
-                (*self.inner)[index].clone(),
-                latest_committed_id,
-            ))
-        }
-
+        unsafe { Ok(((*self.inner)[index].clone(), latest_committed_id)) }
     }
 
     pub fn get_blocking_cloned(&self, id: usize) -> Result<T, ChannelError> {

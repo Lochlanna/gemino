@@ -377,7 +377,6 @@ fn entire_buffer_batch() {
     assert_eq!(vec![42, 21, 12], results);
 }
 
-
 #[test]
 fn string_test() {
     let chan = Channel::new(1).expect("couldn't create channel");
@@ -394,18 +393,17 @@ fn struct_test() {
     #[derive(Debug, Clone, Eq, PartialEq)]
     struct TestMe {
         a: u8,
-        b: String
+        b: String,
     }
     let t = TestMe {
         a: 42,
-        b: String::from("hello world")
+        b: String::from("hello world"),
     };
     let chan = Channel::new(1).expect("couldn't create channel");
     chan.send(t.clone()).expect("couldnt' send message");
     let res = chan.try_get_cloned(0).expect("couldn't get the value");
     assert_eq!(t, res);
 }
-
 
 #[test]
 fn drop_test() {

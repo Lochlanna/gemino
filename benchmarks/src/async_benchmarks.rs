@@ -1,5 +1,5 @@
-use std::future::Future;
 use super::*;
+use std::future::Future;
 
 async fn measure<FUT>(name: &str, runs: u32, f: impl Fn() -> FUT)
 where
@@ -14,7 +14,7 @@ where
         let elapsed = start.elapsed().as_nanos();
         if i < 3 {
             //warmup
-            continue
+            continue;
         }
         if i == 0 {
             average = elapsed
@@ -90,7 +90,7 @@ async fn tokio_broadcast_struct() {
         let results = results.unwrap();
         assert_eq!(results.len(), num_to_write);
     })
-        .await;
+    .await;
 }
 
 #[tokio::test]
@@ -150,7 +150,7 @@ async fn gemino_struct() {
         let results = results.unwrap();
         assert_eq!(results.len(), num_to_write);
     })
-        .await;
+    .await;
 }
 
 #[tokio::test]
@@ -234,7 +234,7 @@ async fn tokio_broadcast_multi_reader_struct() {
         assert_eq!(results_a.len(), num_to_write);
         assert_eq!(results_b.len(), num_to_write);
     })
-        .await;
+    .await;
 }
 
 #[tokio::test]
@@ -282,7 +282,6 @@ async fn gemino_multi_reader() {
     .await;
 }
 
-
 #[tokio::test]
 async fn gemino_multi_reader_struct() {
     let num_to_write = 1000;
@@ -325,5 +324,5 @@ async fn gemino_multi_reader_struct() {
         assert_eq!(results_a.len(), num_to_write);
         assert_eq!(results_b.len(), num_to_write);
     })
-        .await;
+    .await;
 }

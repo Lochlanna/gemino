@@ -1,13 +1,10 @@
 extern crate test;
 
-use std::sync::Arc;
+use super::*;
 use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;
 use std::sync::mpsc::channel;
 use test::Bencher;
-use super::*;
-
-
 
 #[bench]
 fn sequential_gemino(b: &mut Bencher) {
@@ -100,7 +97,7 @@ fn sequential_crossbeam_bounded_struct(b: &mut Bencher) {
 fn sequential_crossbeam_bounded_struct_test() {
     let test_data = gen_test_structs(10000);
     for _ in 0..100 {
-        let (producer, mut consumer) = bounded(100);
+        let (producer, consumer) = bounded(100);
         for i in &test_data {
             producer.send(i.clone()).expect("failed to send");
             let v = consumer.recv().expect("couldn't get value");
