@@ -158,14 +158,13 @@ where
         let id = self.write_head.fetch_add(1, Ordering::Release);
         let index = id % self.capacity;
 
-        let mut should_drop = true;
         {
             #[cfg(feature = "clone")]
-            let write_lock;
+            let _write_lock;
+            #[cfg(feature = "clone")]
             unsafe  {
-                write_lock = self.cell_locks.get_unchecked(index as usize).write();
+                _write_lock = self.cell_locks.get_unchecked(index as usize).write();
             }
-
 
             let pos;
             unsafe {
@@ -175,28 +174,24 @@ where
                 unsafe  {
                     std::ptr::copy_nonoverlapping(&val, pos, 1);
                 }
-                should_drop = false;
+                //val is now corrupted so don't run the destructor. It will still be cleaned up since
+                // it's on the stack
+                std::mem::forget(val);
             } else {
                 // use swap rather than move because it allows us to run drop after releasing locks
-                // and freeing other threads to continue while we run the potentially long running
-                // drop function
+                // and freeing other threads to continue sooner while we run the potentially long
+                // running drop function
                 std::mem::swap(pos, &mut val);
-                //val now contains the old value
+                //val now contains the old value which will be dropped when the function exists
             }
         }
-        //busy spin waiting for previous producer threads to catch up
+        //spin waiting for previous producer threads to catch up
         while self
             .read_head
             .compare_exchange_weak(id - 1, id, Ordering::Release, Ordering::Acquire)
             .is_err()
         {}
-
         self.event.notify(usize::MAX);
-        if should_drop {
-            drop(val)
-        } else {
-            std::mem::forget(val);
-        }
         Ok(id)
     }
 }
@@ -488,7 +483,7 @@ impl<T> Channel<T> where T: Clone {
 
         // We have to do this check after acquiring the lock to make sure it wasn't overwritten
         // Since we have the lock and we know this will not change we might as well early out
-        // as opposed to the way copy works which detects a corrupted read
+        // as opposed to the way the copy version works which detects a corrupted read
         let oldest = self.oldest();
         if id < oldest {
             return Err(ChannelError::IdTooOld(oldest));

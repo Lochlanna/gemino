@@ -5,24 +5,9 @@ use crossbeam_channel::{bounded, unbounded};
 use kanal::bounded as kanal_bounded;
 use std::sync::mpsc::channel;
 use test::Bencher;
+use super::*;
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-struct TestMe {
-    a: u64,
-    b: String,
-    c: Arc<u64>
-}
 
-fn gen_test_structs(num:usize) -> Vec<TestMe> {
-    (0..num).map(|v|{
-        let t = TestMe {
-            a: v as u64,
-            b: format!("hello world {v}"),
-            c: Arc::new((v as u64) + 1)
-        };
-        t
-    }).collect()
-}
 
 #[bench]
 fn sequential_gemino(b: &mut Bencher) {
@@ -109,6 +94,19 @@ fn sequential_crossbeam_bounded_struct(b: &mut Bencher) {
             assert_eq!(v, *i);
         }
     })
+}
+
+#[test]
+fn sequential_crossbeam_bounded_struct_test() {
+    let test_data = gen_test_structs(10000);
+    for _ in 0..100 {
+        let (producer, mut consumer) = bounded(100);
+        for i in &test_data {
+            producer.send(i.clone()).expect("failed to send");
+            let v = consumer.recv().expect("couldn't get value");
+            assert_eq!(v, *i);
+        }
+    }
 }
 
 #[bench]
