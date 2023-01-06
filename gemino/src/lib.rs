@@ -576,6 +576,7 @@ where
     }
 }
 
+#[cfg(feature = "clone")]
 impl<T> Receiver<T> where T: Clone + 'static {
     /// Receives the next value from the channel. This function will block until a new value is put onto the
     /// channel or the channel is closed; even if there are no senders.
