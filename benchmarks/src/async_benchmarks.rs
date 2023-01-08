@@ -138,7 +138,7 @@ async fn gemino_struct() {
             let mut results = Vec::with_capacity(num_to_write);
             for _ in 0..num_to_write {
                 let value = rx
-                    .recv_async_cloned()
+                    .recv_async()
                     .await
                     .expect("got an error from tokio broadcast recv");
                 results.push(value);

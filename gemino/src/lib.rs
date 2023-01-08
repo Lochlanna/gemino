@@ -1,14 +1,26 @@
 //! Gemino is a multi producer, multi consumer channel which allows broadcasting of data from many
 //! producers to many consumers. It's built on top of a Ring Buffer.
-//! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking
+//! All gemino channels are buffered to guarantee that a write will always succeed (unless the channel is closed)
+//! with minimal blocking.
 //!
 //! When the buffer is filled the senders will begin overwriting the oldest entries. This means
 //! that receivers who do not keep up will miss out on messages. It is the responsibility of the developer to
 //! handle this case.
 //!
+//! If the data being sent through the channel implements Copy there are some nice optimisations that are (automatically) made which
+//! make the channel significantly faster. When using Copy, no locks are required for reads or writes. It is possible to
+//! detect a corrupt memcpy after it's taken place eliminating the need for locks. This isn't the case with clone where
+//! arbitrary code needs to be run that depends on the memory inside the channel. For this reason locks must be used
+//! to ensure that writers do not overwrite a value that is being cloned.
+//!
 //! Gemino provide both a blocking and async API which can be used simultaneously on the same channel.
 //!
-//! Gemino makes use of unsafe.
+//! Gemino makes use of the unstable [`min_specialization`](https://doc.rust-lang.org/beta/unstable-book/language-features/min-specialization.html)
+//! feature. This is the sound subset of the larger and currently [`specialization`](https://rust-lang.github.io/rfcs/1210-impl-specialization.html) feature.
+//! `min_specialization` is stable enough that it is in use within the standard library. That being said it's still an unstable feature,
+//! requires nightly.
+
+#![feature(min_specialization)]
 
 #[cfg(test)]
 mod async_tests;
@@ -55,7 +67,7 @@ pub enum Error {
 /// Retrieves messages from the channel in the order they were sent.
 #[derive(Debug)]
 pub struct Receiver<T> {
-    inner: Arc<Channel<T>>,
+    inner: Arc<Gemino<T>>,
     next_id: usize,
 }
 
@@ -110,7 +122,7 @@ impl<T> Receiver<T> {
 
 impl<T> Receiver<T>
 where
-    T: Copy + 'static,
+    T: Clone,
 {
     /// Receives the next value from the channel. This function will block until a new value is put onto the
     /// channel or the channel is closed; even if there are no senders.
@@ -574,477 +586,6 @@ where
     }
 }
 
-#[cfg(feature = "clone")]
-impl<T> Receiver<T>
-where
-    T: Clone + 'static,
-{
-    /// Receives the next value from the channel. This function will block until a new value is put onto the
-    /// channel or the channel is closed; even if there are no senders.
-    ///
-    /// # Errors
-    /// - [`Error::Lagged`] The receiver has fallen behind and the next value has already been overwritten.
-    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
-    /// in the error.
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # fn main() -> Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(String::from("hello world"))?;
-    /// let v = rx.recv_cloned()?;
-    /// assert_eq!(v, "hello world");
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn recv_cloned(&mut self) -> Result<T, Error> {
-        let id = self.next_id;
-        match self.inner.get_blocking_cloned(id) {
-            Ok(value) => {
-                self.next_id += 1;
-                Ok(value)
-            }
-            Err(err) => match err {
-                ChannelError::IdTooOld(oldest) => {
-                    self.next_id = oldest as usize;
-                    let missed = self.next_id - id;
-                    Err(Error::Lagged(missed))
-                }
-                ChannelError::Closed => Err(Error::Closed),
-                _ => panic!("unexpected error while receving from channel: {err}"),
-            },
-        }
-    }
-
-    /// Receives the next value from the channel before the timeout.
-    /// This function will block even if there are no senders.
-    ///
-    /// # Errors
-    /// - [`Error::Lagged`] The receiver has fallen behind and the next value has already been overwritten.
-    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
-    /// in the error.
-    /// - [`Error::NoNewData`] No new data was put into the channel before the timeout.
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use std::time::Duration;
-    /// # use gemino::{channel, Error};
-    /// # use anyhow::Result;
-    /// # fn main() -> Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(String::from("hello world"))?;
-    /// let v = rx.recv_before_cloned(Duration::from_millis(5))?;
-    /// assert_eq!(v, "hello world");
-    /// std::thread::spawn(move ||{
-    ///     std::thread::sleep(Duration::from_millis(6));
-    ///     tx.send(String::from("hello world b")).expect("cannot send");
-    /// });
-    /// let fail = rx.recv_before_cloned(Duration::from_millis(5));
-    /// assert!(fail.is_err());
-    /// assert!(matches!(fail.err().unwrap(), Error::NoNewData));
-    /// let v = rx.recv_before_cloned(Duration::from_millis(30))?;
-    /// assert_eq!(v, "hello world b");
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn recv_before_cloned(&mut self, timeout: core::time::Duration) -> Result<T, Error> {
-        let id = self.next_id;
-        match self
-            .inner
-            .get_blocking_before_cloned(id, Instant::now().add(timeout))
-        {
-            Ok(value) => {
-                self.next_id += 1;
-                Ok(value)
-            }
-            Err(err) => match err {
-                ChannelError::IdTooOld(oldest) => {
-                    self.next_id = oldest as usize;
-                    let missed = self.next_id - id;
-                    Err(Error::Lagged(missed))
-                }
-                ChannelError::Closed => Err(Error::Closed),
-                ChannelError::Timeout => Err(Error::NoNewData),
-                _ => panic!("unexpected error while receving from channel: {err}"),
-            },
-        }
-    }
-
-    /// Asynchronously receives the next value from the channel.
-    ///
-    /// # Errors
-    /// - [`Error::Lagged`] The receiver has fallen behind and the next value has already been overwritten.
-    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
-    /// in the error.
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # async fn test()->Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(String::from("hello world"))?;
-    /// let v = rx.recv_async_cloned().await?;
-    /// assert_eq!(v, "hello world");
-    /// # Ok(())
-    /// # }
-    /// # fn main() -> Result<()> {
-    /// # tokio_test::block_on(test())?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn recv_async_cloned(&mut self) -> Result<T, Error> {
-        let id = self.next_id;
-        match self.inner.get_cloned(id).await {
-            Ok(value) => {
-                self.next_id += 1;
-                Ok(value)
-            }
-            Err(err) => match err {
-                ChannelError::IdTooOld(oldest) => {
-                    self.next_id = oldest as usize;
-                    let missed = self.next_id - id;
-                    Err(Error::Lagged(missed))
-                }
-                ChannelError::Closed => Err(Error::Closed),
-                _ => panic!("unexpected error while receving from channel: {err}"),
-            },
-        }
-    }
-
-    /// Reads all new values from the channel into a vector. Bulk reads are very fast and memory
-    /// efficient as it does a direct memory copy into the target array and only has to do synchronisation
-    /// checks one time. In an environment where there is high write load this will be the best way to
-    /// read from the channel.
-    ///
-    /// This function does not block and does not fail. If there is no new data it does nothing. If there are missed messages the number
-    /// of missed messages will be returned. New values are appended to the given vector so it is the
-    /// responsibility of the caller to reset the vector.
-    ///
-    /// # Errors
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # fn main() -> Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send(String::from("42"))?; // This will be overwritten because the buffer size is only 2
-    /// tx.send(String::from("12"))?;
-    /// tx.send(String::from("21"))?;
-    /// let mut results = Vec::new();
-    /// let v = rx.try_recv_many_cloned(&mut results)?;
-    /// assert_eq!(v, 1); // We missed out on one message
-    /// assert_eq!(vec!["12","21"], results);
-    /// tx.send(String::from("5"))?;
-    /// let v = rx.try_recv_cloned()?; // The receiver is now caught up to the latest value
-    /// assert_eq!(v, "5");
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn try_recv_many_cloned(&mut self, result: &mut Vec<T>) -> Result<usize, Error> {
-        let (first_id, last_id) = self
-            .inner
-            .read_batch_from_cloned(self.next_id, result)
-            .or_else(|err| match err {
-                ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                ChannelError::Closed => Err(Error::Closed),
-                _ => panic!("unexpected error while performing bulk read: {err}"),
-            })?;
-
-        let mut missed = 0;
-        if first_id as usize > self.next_id {
-            missed = first_id as usize - self.next_id
-        }
-        self.next_id = last_id as usize + 1;
-        Ok(missed)
-    }
-
-    /// Reads at least `num` new values from the channel into a vector. Bulk reads are very fast and memory
-    /// efficient as it does a direct memory copy into the target array and only has to do synchronisation
-    /// checks one time. In an environment where there is high write load this will be the best way to
-    /// read from the channel.
-    ///
-    /// This function will block until at least `num` elements are available to read from the channel.
-    ///
-    /// # Errors
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
-    /// - [`Error::ReadTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # fn main() -> Result<()> {
-    /// let (tx, mut rx) = channel(3)?;
-    /// tx.send(String::from("42"))?;
-    /// tx.send(String::from("12"))?;
-    /// tx.send(String::from("21"))?;
-    /// let mut results = Vec::new();
-    /// let v = rx.recv_at_least_cloned(2, &mut results)?;
-    /// assert_eq!(v, 0);
-    /// assert_eq!(vec!["42", "12", "21"], results);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn recv_at_least_cloned(
-        &mut self,
-        num: usize,
-        result: &mut Vec<T>,
-    ) -> Result<usize, Error> {
-        let (first_id, last_id) = self
-            .inner
-            .read_at_least_cloned(num, self.next_id, result)
-            .or_else(|err| match err {
-                ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                ChannelError::Closed => Err(Error::Closed),
-                ChannelError::ReadTooLarge => Err(Error::ReadTooLarge),
-                _ => panic!("unexpected error while performing bulk read: {err}"),
-            })?;
-
-        let mut missed = 0;
-        if first_id as usize > self.next_id {
-            missed = first_id as usize - self.next_id
-        }
-        self.next_id = last_id as usize + 1;
-        Ok(missed)
-    }
-
-    /// Reads at least `num` new values from the channel into a vector. Bulk reads are very fast and memory
-    /// efficient as it does a direct memory copy into the target array and only has to do synchronisation
-    /// checks one time. In an environment where there is high write load this will be the best way to
-    /// read from the channel.
-    ///
-    /// This function will wait until at least `num` elements are available to read from the channel.
-    ///
-    /// # Errors
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    /// - [`Error::NoNewData`] All messages on the channel have already been read by this receiver.
-    /// - [`Error::ReadTooLarge`] Request cannot be filled as the channel capacity is smaller than the requested number of elements.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # use std::time::Duration;
-    /// # async fn test() -> Result<()> {
-    /// let (tx, mut rx) = channel(3)?;
-    /// tx.send(String::from("42"))?;
-    /// tx.send("12".into())?;
-    /// let mut results = Vec::new();
-    /// let fail = tokio::time::timeout(Duration::from_millis(5), rx.recv_at_least_async_cloned(3, &mut results)).await;
-    /// assert!(fail.is_err()); // timeout because it was waiting for 3 elements on the array
-    /// tx.send("21".into())?;
-    /// let v = rx.recv_at_least_async_cloned(3, &mut results).await?;
-    /// assert_eq!(v, 0);
-    /// assert_eq!(vec!["42", "12", "21"], results);
-    /// # Ok(())
-    /// # }
-    /// # fn main() -> Result<()> {
-    /// # tokio_test::block_on(test())?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn recv_at_least_async_cloned(
-        &mut self,
-        num: usize,
-        result: &mut Vec<T>,
-    ) -> Result<usize, Error> {
-        let (first_id, last_id) = self
-            .inner
-            .read_at_least_async_cloned(num, self.next_id, result)
-            .await
-            .or_else(|err| match err {
-                ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                ChannelError::Closed => Err(Error::Closed),
-                ChannelError::ReadTooLarge => Err(Error::ReadTooLarge),
-                _ => panic!("unexpected error while performing bulk read: {err}"),
-            })?;
-
-        let mut missed = 0;
-        if first_id as usize > self.next_id {
-            missed = first_id as usize - self.next_id
-        }
-        self.next_id = last_id as usize + 1;
-        Ok(missed)
-    }
-
-    /// Attempt to retrieve the next value from the channel immediately. This function will not block.
-    ///
-    /// As with [`Receiver::recv`] if the receiver is running behind so far that it hasn't read values before they're overwritten
-    /// `Error::Lagged` is returned along with the number of values the receiver has missed. The receiver is then updated
-    /// so that the next call to any recv function will return the oldest value on the channel.
-    ///
-    ///
-    /// # Errors
-    /// - [`Error::Lagged`] The receiver has fallen behind and the next value has already been overwritten.
-    /// The receiver has skipped forward to the oldest available value in the channel and the number of missed messages is returned
-    /// in the error.
-    /// - [`Error::NoNewData`] There is no new data on the channel to be received.
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # fn main() -> Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send("42".to_string())?;
-    /// let v = rx.try_recv_cloned()?;
-    /// assert_eq!(v, "42");
-    /// assert!(rx.try_recv_cloned().is_err());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn try_recv_cloned(&mut self) -> Result<T, Error> {
-        let id = self.next_id;
-        match self.inner.try_get_cloned(id) {
-            Ok(value) => {
-                self.next_id += 1;
-                Ok(value)
-            }
-            Err(err) => {
-                match err {
-                    ChannelError::IdTooOld(oldest_valid_id) => {
-                        //lagged
-                        self.next_id = oldest_valid_id as usize;
-                        let missed = oldest_valid_id as usize - id;
-                        Err(Error::Lagged(missed))
-                    }
-                    ChannelError::Closed => Err(Error::Closed),
-                    ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-                    _ => panic!("unexpected error while receiving value from channel: {err}"),
-                }
-            }
-        }
-    }
-
-    fn try_latest_cloned(&mut self) -> Result<(T, isize), Error> {
-        self.inner.get_latest_cloned().or_else(|err| match err {
-            ChannelError::Overloaded => Err(Error::Overloaded),
-            ChannelError::IDNotYetWritten => Err(Error::NoNewData),
-            ChannelError::Closed => Err(Error::Closed),
-            _ => panic!("unexpected data while getting latest value from channel: {err}"),
-        })
-    }
-
-    /// Get the latest value from the channel unless it has already been read in which case wait (blocking)
-    /// for the next value to be put onto the channel.
-    /// This will cause the receiver to skip forward to the most recent value meaning that recv will get
-    /// the next latest value.
-    ///
-    ///
-    /// # Errors
-    /// - [`Error::NoNewData`]The channel has not been written to yet.
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    /// - [`Error::Overloaded`] The channel is being written to so quickly that the entire channel is being
-    /// written before a read can take place. This should be very rare and should only really be possible in
-    /// scenarios where there is extremely high right load on an extremely small buffer. Either make the buffer bigger
-    /// or slow the senders.
-    /// # Example
-    ///
-    /// ```rust
-    /// # use std::thread;
-    /// # use std::time::Duration;
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # fn main() -> Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send("42".to_string())?;
-    /// let v = rx.latest_cloned()?;
-    /// assert_eq!(v, "42");
-    /// thread::spawn(move || {
-    ///     thread::sleep(Duration::from_secs_f32(0.1));
-    ///     tx.send("72".into()).expect("couldn't send");
-    /// });
-    /// let v = rx.latest_cloned()?;
-    /// assert_eq!(v, "72");
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn latest_cloned(&mut self) -> Result<T, Error> {
-        let (value, id) = self.try_latest_cloned()?;
-        if (id as usize) < self.next_id {
-            return self.recv_cloned();
-        }
-        self.next_id = id as usize + 1;
-        Ok(value)
-    }
-
-    /// Get the latest value from the channel unless it has already been read in which case wait (async)
-    /// for the next value to be put onto the channel.
-    /// This will cause the receiver to skip forward to the most recent value meaning that recv will get
-    /// the next latest value.
-    ///
-    ///
-    /// # Errors
-    /// - [`Error::NoNewData`]The channel has not been written to yet.
-    /// - [`Error::Closed`] The channel has been closed by a sender. All subsequent calls to this function
-    /// will also return this error.
-    /// - [`Error::Overloaded`] The channel is being written to so quickly that the entire channel is being
-    /// written before a read can take place. This should be very rare and should only really be possible in
-    /// scenarios where there is extremely high right load on an extremely small buffer. Either make the buffer bigger
-    /// or slow the senders.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use std::time::Duration;
-    /// # use gemino::channel;
-    /// # use anyhow::Result;
-    /// # async fn test() -> Result<()> {
-    /// let (tx, mut rx) = channel(2)?;
-    /// tx.send("42".to_string())?;
-    /// let v = rx.latest_async_cloned().await?;
-    /// assert_eq!(v, "42");
-    /// tokio::spawn(async move {
-    ///     tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
-    ///     tx.send("72".to_string()).expect("couldn't send");
-    /// });
-    /// let v = rx.latest_async_cloned().await?;
-    /// assert_eq!(v, "72");
-    /// # Ok(())
-    /// # }
-    ///
-    /// # fn main() -> Result<()> {
-    /// # tokio_test::block_on(test())?;
-    /// # Ok(())
-    /// # }
-    ///
-    /// ```
-    pub async fn latest_async_cloned(&mut self) -> Result<T, Error> {
-        let (value, id) = self.try_latest_cloned()?;
-        if (id as usize) < self.next_id {
-            return self.recv_async_cloned().await;
-        }
-        self.next_id = id as usize + 1;
-        Ok(value)
-    }
-}
-
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
         Self {
@@ -1054,8 +595,8 @@ impl<T> Clone for Receiver<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for Receiver<T> {
-    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+impl<T> From<Arc<Gemino<T>>> for Receiver<T> {
+    fn from(ring_buffer: Arc<Gemino<T>>) -> Self {
         Self {
             inner: ring_buffer,
             next_id: 0,
@@ -1066,7 +607,7 @@ impl<T> From<Arc<Channel<T>>> for Receiver<T> {
 /// Puts new messages onto the channel
 #[derive(Debug)]
 pub struct Sender<T> {
-    inner: Arc<Channel<T>>,
+    inner: Arc<Gemino<T>>,
 }
 
 impl<T> Sender<T> {
@@ -1116,10 +657,7 @@ impl<T> Sender<T> {
     }
 }
 
-impl<T> Sender<T>
-where
-    T: 'static,
-{
+impl<T> Sender<T> {
     /// Put a new value into the channel. This function will almost never block. The underlying implementation
     /// means that writes have to be finalised in order meaning that if thread a then b writes to the channel.
     /// Thread b will have to wait for thread a to finish as thread a was first to start. Insertion is O(1) and
@@ -1128,7 +666,9 @@ where
     /// # Errors
     /// - [`Error::Closed`] The channel has been closed by some sender.
     ///
-    /// # Example
+    /// # Examples
+    ///
+    /// ## Example A
     ///
     /// ```rust
     /// # use gemino::channel;
@@ -1138,6 +678,34 @@ where
     /// tx.send(42)?;
     /// let v = rx.try_recv()?;
     /// assert_eq!(v, 42);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## Example B
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// # use anyhow::Result;
+    /// # fn main() -> Result<()> {
+    /// let x = 42;
+    /// let (tx, mut rx) = channel(2)?;
+    /// tx.send(&x)?;
+    /// let v = rx.try_recv()?;
+    /// assert_eq!(*v, 42);
+    /// # Ok(())
+    /// # }
+    /// ```
+    /// ## Example C (Should not compile)
+    /// ```compile_fail
+    /// # use gemino::channel;
+    /// # use anyhow::Result;
+    /// # fn main() -> Result<()> {
+    /// {
+    ///     let (tx, mut rx) = channel(2)?;
+    ///     let x = 42;
+    ///     tx.send(&x)?;
+    /// }
     /// # Ok(())
     /// # }
     /// ```
@@ -1182,8 +750,8 @@ impl<T> Clone for Sender<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for Sender<T> {
-    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+impl<T> From<Arc<Gemino<T>>> for Sender<T> {
+    fn from(ring_buffer: Arc<Gemino<T>>) -> Self {
         Self { inner: ring_buffer }
     }
 }
@@ -1215,8 +783,8 @@ impl<T> From<Receiver<T>> for Sender<T> {
 /// # Ok(())
 /// # }
 /// ```
-pub fn channel<T: 'static>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
-    let chan = Channel::new(buffer_size).or_else(|err| match err {
+pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
+    let chan = Gemino::new(buffer_size).or_else(|err| match err {
         ChannelError::BufferTooSmall => Err(Error::BufferTooSmall),
         ChannelError::BufferTooBig => Err(Error::BufferTooBig),
         _ => panic!("unexpected error while creating a new channel: {err}"),
