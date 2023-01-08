@@ -29,7 +29,7 @@ fn sequential_gemino_struct(b: &mut Bencher) {
         let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
         for i in &test_data {
             producer.send(i.clone()).expect("failed to send");
-            let v = consumer.recv_cloned().expect("couldn't get value");
+            let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, *i);
         }
     })
@@ -44,7 +44,7 @@ fn sequential_gemino_struct_test() {
         let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
         for i in &test_data {
             producer.send(i.clone()).expect("failed to send");
-            let v = consumer.recv_cloned().expect("couldn't get value");
+            let v = consumer.recv().expect("couldn't get value");
             assert_eq!(v, *i);
         }
     }

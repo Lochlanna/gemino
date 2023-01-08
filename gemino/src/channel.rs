@@ -25,6 +25,7 @@ pub enum ChannelError {
     ReadTooLarge,
 }
 
+
 #[derive(Debug)]
 pub(crate) struct Channel<T> {
     inner: *mut Vec<T>,
@@ -35,6 +36,11 @@ pub(crate) struct Channel<T> {
     closed: AtomicBool,
     #[cfg(feature = "clone")]
     cell_locks: Vec<parking_lot::RwLock<()>>,
+}
+
+pub trait GeminoChannel<T> {
+    fn try_get(&self, id: usize) -> Result<T, ChannelError>;
+    fn get_latest(&self) -> Result<(T, isize), ChannelError>;
 }
 
 unsafe impl<T> Sync for Channel<T> {}
@@ -177,9 +183,123 @@ where
     }
 }
 
+impl<T> GeminoChannel<T> for Channel<T> where T: Clone {
+    default fn try_get(&self, id: usize) -> Result<T, ChannelError> {
+        if id > isize::MAX as usize {
+            return Err(ChannelError::InvalidIndex);
+        }
+        let id = id as isize;
+
+        let index = id % self.capacity;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 || id > latest_committed_id {
+            self.closed()?;
+            return Err(ChannelError::IDNotYetWritten);
+        }
+
+        let _read_lock = self.cell_locks[index as usize].read();
+
+        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
+        // Since we have the lock and we know this will not change we might as well early out
+        // as opposed to the way the copy version works which detects a corrupted read
+        let oldest = self.oldest();
+        if id < oldest {
+            return Err(ChannelError::IdTooOld(oldest));
+        }
+
+        unsafe { Ok((*self.inner)[index as usize].clone()) }
+    }
+
+    default fn get_latest(&self) -> Result<(T, isize), ChannelError> {
+        self.closed()?;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 {
+            return Err(ChannelError::IDNotYetWritten);
+        }
+        let index = (latest_committed_id % self.capacity) as usize;
+
+        let _read_lock = self.cell_locks[index].read();
+
+        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
+        // Since we have the lock and we know this will not change we might as well early out
+        // as opposed to the way copy works which detects a corrupted read
+        let oldest = self.oldest();
+        if latest_committed_id < oldest {
+            // The only way that this should be possible is if the buffer is being written to so quickly
+            // that it is completely overwritten before the lock can be taken out
+            // With a very small buffer this might be possible although this check is probably
+            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
+            return Err(ChannelError::Overloaded);
+        }
+
+        unsafe { Ok(((*self.inner)[index].clone(), latest_committed_id)) }
+    }
+}
+
+impl<T> GeminoChannel<T> for Channel<T> where T: Copy {
+
+    fn try_get(&self, id: usize) -> Result<T, ChannelError> {
+        if id > isize::MAX as usize {
+            return Err(ChannelError::InvalidIndex);
+        }
+        let id = id as isize;
+
+        let index = id % self.capacity;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 || id > latest_committed_id {
+            self.closed()?;
+            return Err(ChannelError::IDNotYetWritten);
+        }
+
+        let result;
+        unsafe {
+            result = (*self.inner)[index as usize];
+        }
+
+        // By checking this after we have read the value we are guaranteeing that the value we read the actual value we wanted
+        // and it wasn't overwritten by a reader. If we did this check before hand it would be possible
+        // for a reader to update the value between the check and reading the value from memory
+        let oldest = self.oldest();
+        if id < oldest {
+            return Err(ChannelError::IdTooOld(oldest));
+        }
+
+        Ok(result)
+    }
+
+    fn get_latest(&self) -> Result<(T, isize), ChannelError> {
+        self.closed()?;
+
+        let latest_committed_id = self.read_head.load(Ordering::Acquire);
+        if latest_committed_id < 0 {
+            return Err(ChannelError::IDNotYetWritten);
+        }
+        let result;
+        unsafe {
+            result = Ok((
+                (*self.inner)[(latest_committed_id % self.capacity) as usize],
+                latest_committed_id,
+            ))
+        }
+
+        if latest_committed_id < self.oldest() {
+            // The only way that this should be possible is if the buffer is being written to so quickly
+            // that it is completely overwritten before the read can actually take place
+            // With a very small buffer this might be possible although this check is probably
+            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
+            return Err(ChannelError::Overloaded);
+        }
+
+        result
+    }
+}
+
 impl<T> Channel<T>
 where
-    T: Copy + 'static,
+    T: Clone + 'static,
 {
     pub fn read_batch_from(
         &self,
@@ -212,7 +332,7 @@ where
             unsafe {
                 into.set_len(res_start + num_elements);
                 let slice_to_copy = &((*self.inner)[start_idx..(end_idx)]);
-                into[res_start..(res_start + num_elements)].copy_from_slice(slice_to_copy);
+                into[res_start..(res_start + num_elements)].clone_from_slice(slice_to_copy);
             }
         } else {
             let num_elements = end_idx + (self.capacity as usize - start_idx);
@@ -221,10 +341,10 @@ where
             unsafe {
                 into.set_len(res_start + num_elements);
                 let slice_to_copy = &((*self.inner)[start_idx..]);
-                into[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
+                into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
                 res_start += slice_to_copy.len();
                 let slice_to_copy = &((*self.inner)[..end_idx]);
-                into[res_start..(res_start + slice_to_copy.len())].copy_from_slice(slice_to_copy);
+                into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
             }
         }
 
@@ -288,62 +408,6 @@ where
             }
             listener.await;
         }
-    }
-
-    pub fn try_get(&self, id: usize) -> Result<T, ChannelError> {
-        if id > isize::MAX as usize {
-            return Err(ChannelError::InvalidIndex);
-        }
-        let id = id as isize;
-
-        let index = id % self.capacity;
-
-        let latest_committed_id = self.read_head.load(Ordering::Acquire);
-        if latest_committed_id < 0 || id > latest_committed_id {
-            self.closed()?;
-            return Err(ChannelError::IDNotYetWritten);
-        }
-
-        let result;
-        unsafe {
-            result = (*self.inner)[index as usize];
-        }
-
-        // By checking this after we have read the value we are guaranteeing that the value we read the actual value we wanted
-        // and it wasn't overwritten by a reader. If we did this check before hand it would be possible
-        // for a reader to update the value between the check and reading the value from memory
-        let oldest = self.oldest();
-        if id < oldest {
-            return Err(ChannelError::IdTooOld(oldest));
-        }
-
-        Ok(result)
-    }
-
-    pub fn get_latest(&self) -> Result<(T, isize), ChannelError> {
-        self.closed()?;
-
-        let latest_committed_id = self.read_head.load(Ordering::Acquire);
-        if latest_committed_id < 0 {
-            return Err(ChannelError::IDNotYetWritten);
-        }
-        let result;
-        unsafe {
-            result = Ok((
-                (*self.inner)[(latest_committed_id % self.capacity) as usize],
-                latest_committed_id,
-            ))
-        }
-
-        if latest_committed_id < self.oldest() {
-            // The only way that this should be possible is if the buffer is being written to so quickly
-            // that it is completely overwritten before the read can actually take place
-            // With a very small buffer this might be possible although this check is probably
-            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
-            return Err(ChannelError::Overloaded);
-        }
-
-        result
     }
 
     pub fn get_blocking(&self, id: usize) -> Result<T, ChannelError> {
@@ -547,131 +611,5 @@ where
             }
             listener.await;
         }
-    }
-    pub fn try_get_cloned(&self, id: usize) -> Result<T, ChannelError> {
-        if id > isize::MAX as usize {
-            return Err(ChannelError::InvalidIndex);
-        }
-        let id = id as isize;
-
-        let index = id % self.capacity;
-
-        let latest_committed_id = self.read_head.load(Ordering::Acquire);
-        if latest_committed_id < 0 || id > latest_committed_id {
-            self.closed()?;
-            return Err(ChannelError::IDNotYetWritten);
-        }
-
-        let _read_lock = self.cell_locks[index as usize].read();
-
-        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
-        // Since we have the lock and we know this will not change we might as well early out
-        // as opposed to the way the copy version works which detects a corrupted read
-        let oldest = self.oldest();
-        if id < oldest {
-            return Err(ChannelError::IdTooOld(oldest));
-        }
-
-        unsafe { Ok((*self.inner)[index as usize].clone()) }
-    }
-
-    pub fn get_latest_cloned(&self) -> Result<(T, isize), ChannelError> {
-        self.closed()?;
-
-        let latest_committed_id = self.read_head.load(Ordering::Acquire);
-        if latest_committed_id < 0 {
-            return Err(ChannelError::IDNotYetWritten);
-        }
-        let index = (latest_committed_id % self.capacity) as usize;
-
-        let _read_lock = self.cell_locks[index].read();
-
-        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
-        // Since we have the lock and we know this will not change we might as well early out
-        // as opposed to the way copy works which detects a corrupted read
-        let oldest = self.oldest();
-        if latest_committed_id < oldest {
-            // The only way that this should be possible is if the buffer is being written to so quickly
-            // that it is completely overwritten before the lock can be taken out
-            // With a very small buffer this might be possible although this check is probably
-            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
-            return Err(ChannelError::Overloaded);
-        }
-
-        unsafe { Ok(((*self.inner)[index].clone(), latest_committed_id)) }
-    }
-
-    pub fn get_blocking_cloned(&self, id: usize) -> Result<T, ChannelError> {
-        let immediate = self.try_get_cloned(id);
-        if let Err(err) = &immediate {
-            if !matches!(err, ChannelError::IDNotYetWritten) {
-                return immediate;
-            }
-        } else {
-            return immediate;
-        }
-        // this could be better than a spin if the update rate is slow
-        // create the listener then check again as the creation can take a long time!
-        while self.read_head.load(Ordering::Acquire) < id as isize {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as isize {
-                listener.wait();
-            }
-            self.closed()?
-        }
-        self.try_get_cloned(id)
-    }
-
-    pub fn get_blocking_before_cloned(
-        &self,
-        id: usize,
-        before: std::time::Instant,
-    ) -> Result<T, ChannelError> {
-        let immediate = self.try_get_cloned(id);
-        if let Err(err) = &immediate {
-            if !matches!(err, ChannelError::IDNotYetWritten) {
-                return immediate;
-            }
-        } else {
-            return immediate;
-        }
-
-        while self.read_head.load(Ordering::Acquire) < id as isize {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as isize
-                && !listener.wait_deadline(before)
-            {
-                return Err(ChannelError::Timeout);
-            }
-            self.closed()?;
-        }
-
-        self.try_get_cloned(id)
-    }
-
-    pub async fn get_cloned(&self, id: usize) -> Result<T, ChannelError> {
-        let immediate = self.try_get_cloned(id);
-        if let Err(err) = &immediate {
-            if !matches!(err, ChannelError::IDNotYetWritten) {
-                return immediate;
-            }
-        } else {
-            return immediate;
-        }
-
-        while self.read_head.load(Ordering::Acquire) < id as isize {
-            let listener = self.event.listen();
-            if self.read_head.load(Ordering::Acquire) < id as isize {
-                listener.await;
-            }
-            self.closed()?;
-        }
-
-        Ok(self.try_get_cloned(id).unwrap())
-    }
-
-    pub async fn read_next_cloned(&self) -> (T, isize) {
-        self.event.listen().await;
-        self.get_latest_cloned().unwrap()
     }
 }

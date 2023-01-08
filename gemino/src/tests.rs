@@ -382,8 +382,8 @@ fn string_test() {
     let chan = Channel::new(1).expect("couldn't create channel");
     let input = String::from("hello");
     chan.send(input.clone()).expect("couldnt' send message");
-    let s = chan.try_get_cloned(0).expect("couldn't get the value");
-    let s2 = chan.get_latest_cloned().expect("couldn't get the value").0;
+    let s = chan.try_get(0).expect("couldn't get the value");
+    let s2 = chan.get_latest().expect("couldn't get the value").0;
     assert_eq!(s, input);
     assert_eq!(s2, input);
 }
@@ -401,7 +401,7 @@ fn struct_test() {
     };
     let chan = Channel::new(1).expect("couldn't create channel");
     chan.send(t.clone()).expect("couldnt' send message");
-    let res = chan.try_get_cloned(0).expect("couldn't get the value");
+    let res = chan.try_get(0).expect("couldn't get the value");
     assert_eq!(t, res);
 }
 
