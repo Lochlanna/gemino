@@ -25,7 +25,6 @@ pub enum ChannelError {
     ReadTooLarge,
 }
 
-
 #[derive(Debug)]
 pub(crate) struct Gemino<T> {
     inner: *mut Vec<T>,
@@ -34,14 +33,17 @@ pub(crate) struct Gemino<T> {
     capacity: isize,
     event: event_listener::Event,
     closed: AtomicBool,
-    #[cfg(feature = "clone")]
     cell_locks: Vec<parking_lot::RwLock<()>>,
 }
 
 pub trait Channel<T> {
     fn try_get(&self, id: usize) -> Result<T, ChannelError>;
     fn get_latest(&self) -> Result<(T, isize), ChannelError>;
-    fn read_batch_from(&self, from_id: usize, into: &mut Vec<T>) -> Result<(isize, isize), ChannelError>;
+    fn read_batch_from(
+        &self,
+        from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError>;
 }
 
 unsafe impl<T> Sync for Gemino<T> {}
@@ -82,9 +84,8 @@ impl<T> Gemino<T> {
         }
         let inner = Box::into_raw(inner);
 
-        #[cfg(feature = "clone")]
         let mut cell_locks;
-        #[cfg(feature = "clone")]
+
         {
             cell_locks = Vec::new();
             cell_locks.resize_with(buffer_size, Default::default);
@@ -97,7 +98,7 @@ impl<T> Gemino<T> {
             capacity: buffer_size as isize,
             event: event_listener::Event::new(),
             closed: AtomicBool::new(false),
-            #[cfg(feature = "clone")]
+
             cell_locks,
         }))
     }
@@ -156,9 +157,8 @@ where
         //allocate old value here so that we don't run the drop function while we have any locks
         let mut _old_value: T;
         {
-            #[cfg(feature = "clone")]
             let _write_lock;
-            #[cfg(feature = "clone")]
+
             unsafe {
                 _write_lock = self.cell_locks.get_unchecked(index as usize).write();
             }
@@ -184,7 +184,10 @@ where
     }
 }
 
-impl<T> Channel<T> for Gemino<T> where T: Clone {
+impl<T> Channel<T> for Gemino<T>
+where
+    T: Clone,
+{
     default fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         if id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
@@ -238,7 +241,11 @@ impl<T> Channel<T> for Gemino<T> where T: Clone {
         unsafe { Ok(((*self.inner)[index].clone(), latest_committed_id)) }
     }
 
-    default fn read_batch_from(&self, from_id: usize, into: &mut Vec<T>) -> Result<(isize, isize), ChannelError> {
+    default fn read_batch_from(
+        &self,
+        from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
         if from_id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
         }
@@ -311,8 +318,10 @@ impl<T> Channel<T> for Gemino<T> where T: Clone {
     }
 }
 
-impl<T> Channel<T> for Gemino<T> where T: Copy {
-
+impl<T> Channel<T> for Gemino<T>
+where
+    T: Copy,
+{
     fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         if id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
@@ -369,7 +378,11 @@ impl<T> Channel<T> for Gemino<T> where T: Copy {
         result
     }
 
-    fn read_batch_from(&self, from_id: usize, into: &mut Vec<T>) -> Result<(isize, isize), ChannelError> {
+    fn read_batch_from(
+        &self,
+        from_id: usize,
+        into: &mut Vec<T>,
+    ) -> Result<(isize, isize), ChannelError> {
         if from_id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
         }
