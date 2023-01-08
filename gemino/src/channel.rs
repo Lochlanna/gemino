@@ -137,10 +137,7 @@ impl<T> Gemino<T> {
     }
 }
 
-impl<T> Gemino<T>
-where
-    T: 'static,
-{
+impl<T> Gemino<T> {
     pub fn send(&self, val: T) -> Result<isize, ChannelError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);

@@ -406,6 +406,15 @@ fn struct_test() {
 }
 
 #[test]
+fn ref_test() {
+    let x = 42;
+    let chan = Gemino::new(1).expect("couldn't create channel");
+    chan.send(&x).expect("couldnt' send message");
+    let res = chan.try_get(0).expect("couldn't get the value");
+    assert_eq!(42, *res);
+}
+
+#[test]
 fn drop_test() {
     let p = Arc::new(3);
     let p1 = Arc::new(3);

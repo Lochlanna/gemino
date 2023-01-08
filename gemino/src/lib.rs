@@ -648,8 +648,6 @@ impl<T> Sender<T> {
 }
 
 impl<T> Sender<T>
-where
-    T: 'static,
 {
     /// Put a new value into the channel. This function will almost never block. The underlying implementation
     /// means that writes have to be finalised in order meaning that if thread a then b writes to the channel.
@@ -659,7 +657,9 @@ where
     /// # Errors
     /// - [`Error::Closed`] The channel has been closed by some sender.
     ///
-    /// # Example
+    /// # Examples
+    ///
+    /// ## Example A
     ///
     /// ```rust
     /// # use gemino::channel;
@@ -669,6 +669,34 @@ where
     /// tx.send(42)?;
     /// let v = rx.try_recv()?;
     /// assert_eq!(v, 42);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## Example B
+    ///
+    /// ```rust
+    /// # use gemino::channel;
+    /// # use anyhow::Result;
+    /// # fn main() -> Result<()> {
+    /// let x = 42;
+    /// let (tx, mut rx) = channel(2)?;
+    /// tx.send(&x)?;
+    /// let v = rx.try_recv()?;
+    /// assert_eq!(*v, 42);
+    /// # Ok(())
+    /// # }
+    /// ```
+    /// ## Example C (Should not compile)
+    /// ```compile_fail
+    /// # use gemino::channel;
+    /// # use anyhow::Result;
+    /// # fn main() -> Result<()> {
+    /// {
+    ///     let (tx, mut rx) = channel(2)?;
+    ///     let x = 42;
+    ///     tx.send(&x)?;
+    /// }
     /// # Ok(())
     /// # }
     /// ```
