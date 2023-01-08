@@ -10,7 +10,7 @@
 //!
 //! Gemino makes use of unsafe and unstable nightly features (specialization)
 
-#![feature(specialization)]
+#![feature(min_specialization)]
 
 #[cfg(test)]
 mod async_tests;

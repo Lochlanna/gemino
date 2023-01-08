@@ -21,10 +21,10 @@ Gemino was developed as a personal learning exercise, but I believe it is good e
 > Gemino is still in very early development, is lacking rigorous testing and makes use of unsafe as well as unstable features. Use at your own risk!
 
 ## Unstable Features
-Gemino makes use of the unstable [specialization](https://rust-lang.github.io/rfcs/1210-impl-specialization.html) feature which is currently
-marked as incomplete due to soundness issues. Geminos use of this feature is basic enough that it avoids the soundness issues
-and probably isn't using anything that is likely to change or misbehave.
-This RFC has been open since 2015 and doesn't have any real timeline on when or if this feature might become stable.
+Gemino makes use of the unstable [`min_specialization`](https://doc.rust-lang.org/beta/unstable-book/language-features/min-specialization.html) 
+feature. This is the sound subset of the larger and currently [`specialization`](https://rust-lang.github.io/rfcs/1210-impl-specialization.html) feature.
+`min_specialization` is stable enough that it is in use within the standard library. That being said it's still an unstable feature, 
+requires nightly.
 
 ## Why use Gemino?
 * You need both async and blocking access to the same channel.
