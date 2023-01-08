@@ -27,7 +27,7 @@ pub enum ChannelError {
 
 
 #[derive(Debug)]
-pub(crate) struct Channel<T> {
+pub(crate) struct Gemino<T> {
     inner: *mut Vec<T>,
     write_head: AtomicIsize,
     read_head: AtomicIsize,
@@ -38,16 +38,16 @@ pub(crate) struct Channel<T> {
     cell_locks: Vec<parking_lot::RwLock<()>>,
 }
 
-pub trait GeminoChannel<T> {
+pub trait Channel<T> {
     fn try_get(&self, id: usize) -> Result<T, ChannelError>;
     fn get_latest(&self) -> Result<(T, isize), ChannelError>;
     fn read_batch_from(&self, from_id: usize, into: &mut Vec<T>) -> Result<(isize, isize), ChannelError>;
 }
 
-unsafe impl<T> Sync for Channel<T> {}
-unsafe impl<T> Send for Channel<T> {}
+unsafe impl<T> Sync for Gemino<T> {}
+unsafe impl<T> Send for Gemino<T> {}
 
-impl<T> Drop for Channel<T> {
+impl<T> Drop for Gemino<T> {
     fn drop(&mut self) {
         //Let box handle dropping and memory cleanup for us when it goes out of scope here
         let mut inner;
@@ -65,7 +65,7 @@ impl<T> Drop for Channel<T> {
     }
 }
 
-impl<T> Channel<T> {
+impl<T> Gemino<T> {
     #[allow(clippy::uninit_vec)]
     pub(crate) fn new(buffer_size: usize) -> Result<Arc<Self>, ChannelError> {
         if buffer_size < 1 {
@@ -136,7 +136,7 @@ impl<T> Channel<T> {
     }
 }
 
-impl<T> Channel<T>
+impl<T> Gemino<T>
 where
     T: 'static,
 {
@@ -184,7 +184,7 @@ where
     }
 }
 
-impl<T> GeminoChannel<T> for Channel<T> where T: Clone {
+impl<T> Channel<T> for Gemino<T> where T: Clone {
     default fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         if id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
@@ -311,7 +311,7 @@ impl<T> GeminoChannel<T> for Channel<T> where T: Clone {
     }
 }
 
-impl<T> GeminoChannel<T> for Channel<T> where T: Copy {
+impl<T> Channel<T> for Gemino<T> where T: Copy {
 
     fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         if id > isize::MAX as usize {
@@ -426,7 +426,7 @@ impl<T> GeminoChannel<T> for Channel<T> where T: Copy {
     }
 }
 
-impl<T> Channel<T>
+impl<T> Gemino<T>
 where
     T: Clone,
 {

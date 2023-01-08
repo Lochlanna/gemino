@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn basic_async() {
-    let chan = Channel::new(5).expect("couldn't create channel");
+    let chan = Gemino::new(5).expect("couldn't create channel");
     let cloned = chan.clone();
     spawn(move || {
         sleep(Duration::from_secs_f64(0.02));
@@ -17,7 +17,7 @@ async fn basic_async() {
 
 #[tokio::test]
 async fn wait_for_next() {
-    let chan = Channel::new(5).expect("couldn't create channel");
+    let chan = Gemino::new(5).expect("couldn't create channel");
     let cloned = chan.clone();
     spawn(move || {
         sleep(Duration::from_secs_f64(0.02));

@@ -57,7 +57,7 @@ pub enum Error {
 /// Retrieves messages from the channel in the order they were sent.
 #[derive(Debug)]
 pub struct Receiver<T> {
-    inner: Arc<Channel<T>>,
+    inner: Arc<Gemino<T>>,
     next_id: usize,
 }
 
@@ -585,8 +585,8 @@ impl<T> Clone for Receiver<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for Receiver<T> {
-    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+impl<T> From<Arc<Gemino<T>>> for Receiver<T> {
+    fn from(ring_buffer: Arc<Gemino<T>>) -> Self {
         Self {
             inner: ring_buffer,
             next_id: 0,
@@ -597,7 +597,7 @@ impl<T> From<Arc<Channel<T>>> for Receiver<T> {
 /// Puts new messages onto the channel
 #[derive(Debug)]
 pub struct Sender<T> {
-    inner: Arc<Channel<T>>,
+    inner: Arc<Gemino<T>>,
 }
 
 impl<T> Sender<T> {
@@ -713,8 +713,8 @@ impl<T> Clone for Sender<T> {
     }
 }
 
-impl<T> From<Arc<Channel<T>>> for Sender<T> {
-    fn from(ring_buffer: Arc<Channel<T>>) -> Self {
+impl<T> From<Arc<Gemino<T>>> for Sender<T> {
+    fn from(ring_buffer: Arc<Gemino<T>>) -> Self {
         Self { inner: ring_buffer }
     }
 }
@@ -747,7 +747,7 @@ impl<T> From<Receiver<T>> for Sender<T> {
 /// # }
 /// ```
 pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
-    let chan = Channel::new(buffer_size).or_else(|err| match err {
+    let chan = Gemino::new(buffer_size).or_else(|err| match err {
         ChannelError::BufferTooSmall => Err(Error::BufferTooSmall),
         ChannelError::BufferTooBig => Err(Error::BufferTooBig),
         _ => panic!("unexpected error while creating a new channel: {err}"),

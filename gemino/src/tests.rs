@@ -60,7 +60,7 @@ fn write_all<T: Copy + 'static + Sync + Send + Send>(
 
 #[test]
 fn sequential_read_write() {
-    let chan = Channel::new(2).expect("couldn't create channel");
+    let chan = Gemino::new(2).expect("couldn't create channel");
     chan.send(42).expect("failed to send");
     chan.send(21).expect("failed to send");
     assert_eq!(chan.try_get(0).expect("no value"), 42);
@@ -110,7 +110,7 @@ fn simultaneous_read_write_multiple_reader() {
 
 #[test]
 fn seq_read_write_many() {
-    let chan = Channel::new(100).expect("couldn't create channel");
+    let chan = Gemino::new(100).expect("couldn't create channel");
     for i in 0..1000 {
         chan.send(i).expect("failed to send");
         let v = chan.try_get(i).expect("couldn't get value");
@@ -120,7 +120,7 @@ fn seq_read_write_many() {
 
 #[test]
 fn try_get_invalid() {
-    let chan = Channel::<u8>::new(5).expect("couldn't create channel");
+    let chan = Gemino::<u8>::new(5).expect("couldn't create channel");
     let err = chan.try_get(usize::MAX);
     assert!(err.is_err());
     assert!(matches!(err.err().unwrap(), ChannelError::InvalidIndex));
@@ -153,19 +153,19 @@ fn receive_many() {
 
 #[test]
 fn oldest() {
-    let chan = Channel::new(3).expect("couldn't create channel");
+    let chan = Gemino::new(3).expect("couldn't create channel");
     for v in 0..10 {
         chan.send(v).expect("failed to send");
     }
     assert_eq!(chan.oldest(), 7);
 
-    let chan = Channel::new(12).expect("couldn't create channel");
+    let chan = Gemino::new(12).expect("couldn't create channel");
     for v in 0..10 {
         chan.send(v).expect("failed to send");
     }
     assert_eq!(chan.oldest(), 0);
 
-    let chan = Channel::new(1).expect("couldn't create channel");
+    let chan = Gemino::new(1).expect("couldn't create channel");
     for v in 0..10 {
         chan.send(v).expect("failed to send");
     }
@@ -174,7 +174,7 @@ fn oldest() {
 
 #[test]
 fn id_too_old() {
-    let chan = Channel::new(3).expect("couldn't create channel");
+    let chan = Gemino::new(3).expect("couldn't create channel");
     for v in 0..10 {
         chan.send(v).expect("failed to send");
     }
@@ -237,7 +237,7 @@ fn id_not_written() {
 
 #[test]
 fn no_new_data() {
-    let chan = Channel::<u8>::new(50).expect("couldn't create channel");
+    let chan = Gemino::<u8>::new(50).expect("couldn't create channel");
     let res = chan.try_get(40);
     match res {
         Ok(_) => panic!("expected failure as this value should have been overwritten"),
@@ -249,7 +249,7 @@ fn no_new_data() {
 
 #[test]
 fn get_timeout() {
-    let chan = Channel::<u8>::new(50).expect("couldn't create channel");
+    let chan = Gemino::<u8>::new(50).expect("couldn't create channel");
     let res =
         chan.get_blocking_before(40, Instant::now().add(core::time::Duration::from_millis(5)));
     match res {
@@ -262,7 +262,7 @@ fn get_timeout() {
 
 #[test]
 fn buffer_too_small() {
-    let chan = Channel::<u8>::new(0);
+    let chan = Gemino::<u8>::new(0);
     match chan {
         Ok(_) => panic!("expected failure as this value should have been overwritten"),
         Err(err) => {
@@ -273,7 +273,7 @@ fn buffer_too_small() {
 
 #[test]
 fn capacity() {
-    let chan = Channel::<u8>::new(8).expect("couldn't create channel");
+    let chan = Gemino::<u8>::new(8).expect("couldn't create channel");
     assert_eq!(chan.capacity(), 8);
     for i in 0..10 {
         chan.send(i).expect("failed to send");
@@ -379,7 +379,7 @@ fn entire_buffer_batch() {
 
 #[test]
 fn string_test() {
-    let chan = Channel::new(1).expect("couldn't create channel");
+    let chan = Gemino::new(1).expect("couldn't create channel");
     let input = String::from("hello");
     chan.send(input.clone()).expect("couldnt' send message");
     let s = chan.try_get(0).expect("couldn't get the value");
@@ -399,7 +399,7 @@ fn struct_test() {
         a: 42,
         b: String::from("hello world"),
     };
-    let chan = Channel::new(1).expect("couldn't create channel");
+    let chan = Gemino::new(1).expect("couldn't create channel");
     chan.send(t.clone()).expect("couldnt' send message");
     let res = chan.try_get(0).expect("couldn't get the value");
     assert_eq!(t, res);
