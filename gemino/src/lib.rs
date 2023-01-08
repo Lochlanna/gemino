@@ -112,7 +112,7 @@ impl<T> Receiver<T> {
 
 impl<T> Receiver<T>
 where
-    T: Clone + 'static,
+    T: Clone,
 {
     /// Receives the next value from the channel. This function will block until a new value is put onto the
     /// channel or the channel is closed; even if there are no senders.
@@ -746,7 +746,7 @@ impl<T> From<Receiver<T>> for Sender<T> {
 /// # Ok(())
 /// # }
 /// ```
-pub fn channel<T: 'static>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
+pub fn channel<T>(buffer_size: usize) -> Result<(Sender<T>, Receiver<T>), Error> {
     let chan = Channel::new(buffer_size).or_else(|err| match err {
         ChannelError::BufferTooSmall => Err(Error::BufferTooSmall),
         ChannelError::BufferTooBig => Err(Error::BufferTooBig),
