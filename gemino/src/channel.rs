@@ -135,9 +135,7 @@ impl<T> Gemino<T> {
         // Notify will cause all waiting/blocking threads to wake up and cancel
         self.event.notify(usize::MAX);
     }
-}
 
-impl<T> Gemino<T> {
     pub fn send(&self, val: T) -> Result<isize, ChannelError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ChannelError::Closed);
@@ -406,6 +404,7 @@ where
             unsafe {
                 into.set_len(res_start + num_elements);
                 let slice_to_copy = &((*self.inner)[start_idx..(end_idx)]);
+                // Clone from slice will use copy from slice if T is Copy
                 into[res_start..(res_start + num_elements)].clone_from_slice(slice_to_copy);
             }
         } else {
@@ -415,9 +414,11 @@ where
             unsafe {
                 into.set_len(res_start + num_elements);
                 let slice_to_copy = &((*self.inner)[start_idx..]);
+                // Clone from slice will use copy from slice if T is Copy
                 into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
                 res_start += slice_to_copy.len();
                 let slice_to_copy = &((*self.inner)[..end_idx]);
+                // Clone from slice will use copy from slice if T is Copy
                 into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
             }
         }

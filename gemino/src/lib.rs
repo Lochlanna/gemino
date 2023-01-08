@@ -1,14 +1,24 @@
 //! Gemino is a multi producer, multi consumer channel which allows broadcasting of data from many
 //! producers to many consumers. It's built on top of a Ring Buffer.
-//! All gemino channels are buffered to guarantee that a write will always succeed with minimal blocking
+//! All gemino channels are buffered to guarantee that a write will always succeed (unless the channel is closed)
+//! with minimal blocking.
 //!
 //! When the buffer is filled the senders will begin overwriting the oldest entries. This means
 //! that receivers who do not keep up will miss out on messages. It is the responsibility of the developer to
 //! handle this case.
 //!
+//! If the data being sent through the channel implements Copy there are some nice optimisations that are (automatically) made which
+//! make the channel significantly faster. When using Copy, no locks are required for reads or writes. It is possible to
+//! detect a corrupt memcpy after it's taken place eliminating the need for locks. This isn't the case with clone where
+//! arbitrary code needs to be run that depends on the memory inside the channel. For this reason locks must be used
+//! to ensure that writers do not overwrite a value that is being cloned.
+//!
 //! Gemino provide both a blocking and async API which can be used simultaneously on the same channel.
 //!
-//! Gemino makes use of unsafe and unstable nightly features (specialization)
+//! Gemino makes use of the unstable [`min_specialization`](https://doc.rust-lang.org/beta/unstable-book/language-features/min-specialization.html)
+//! feature. This is the sound subset of the larger and currently [`specialization`](https://rust-lang.github.io/rfcs/1210-impl-specialization.html) feature.
+//! `min_specialization` is stable enough that it is in use within the standard library. That being said it's still an unstable feature,
+//! requires nightly.
 
 #![feature(min_specialization)]
 
@@ -647,8 +657,7 @@ impl<T> Sender<T> {
     }
 }
 
-impl<T> Sender<T>
-{
+impl<T> Sender<T> {
     /// Put a new value into the channel. This function will almost never block. The underlying implementation
     /// means that writes have to be finalised in order meaning that if thread a then b writes to the channel.
     /// Thread b will have to wait for thread a to finish as thread a was first to start. Insertion is O(1) and
