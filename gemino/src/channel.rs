@@ -291,29 +291,8 @@ where
 
         // now that we have the lock a writer cannot overtake us so anything up until latest
         // committed id is safe to read
+        self.batch(into, start_idx, end_idx);
 
-        if end_idx > start_idx {
-            let num_elements = end_idx - start_idx;
-            into.reserve(num_elements);
-            let res_start = into.len();
-            unsafe {
-                into.set_len(res_start + num_elements);
-                let slice_to_copy = &((*self.inner)[start_idx..(end_idx)]);
-                into[res_start..(res_start + num_elements)].clone_from_slice(slice_to_copy);
-            }
-        } else {
-            let num_elements = end_idx + (self.capacity as usize - start_idx);
-            into.reserve(num_elements);
-            let mut res_start = into.len();
-            unsafe {
-                into.set_len(res_start + num_elements);
-                let slice_to_copy = &((*self.inner)[start_idx..]);
-                into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
-                res_start += slice_to_copy.len();
-                let slice_to_copy = &((*self.inner)[..end_idx]);
-                into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
-            }
-        }
         Ok((from_id, latest_committed_id))
     }
 }
@@ -402,6 +381,27 @@ where
         let start_idx = (from_id % self.capacity) as usize;
         let end_idx = (latest_committed_id % self.capacity) as usize + 1;
 
+        self.batch(into, start_idx, end_idx);
+
+        // We need to ensure that no writers were writing to the same cells we were reading. If they
+        // did we invalidate those values.
+        let oldest = self.oldest();
+        if from_id < oldest {
+            // we have to invalidate some number of values as they may have been overwritten during the copy
+            // this is pretty expensive to do but unavoidable unfortunately
+            let num_to_remove = (oldest - from_id) as usize;
+            into.drain(0..num_to_remove);
+            from_id = oldest;
+        }
+        Ok((from_id, latest_committed_id))
+    }
+}
+
+impl<T> Gemino<T>
+where
+    T: Clone,
+{
+    fn batch(&self, into: &mut Vec<T>, start_idx: usize, end_idx: usize) {
         if end_idx > start_idx {
             let num_elements = end_idx - start_idx;
             into.reserve(num_elements);
@@ -424,25 +424,8 @@ where
                 into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
             }
         }
-
-        // We need to ensure that no writers were writing to the same cells we were reading. If they
-        // did we invalidate those values.
-        let oldest = self.oldest();
-        if from_id < oldest {
-            // we have to invalidate some number of values as they may have been overwritten during the copy
-            // this is pretty expensive to do but unavoidable unfortunately
-            let num_to_remove = (oldest - from_id) as usize;
-            into.drain(0..num_to_remove);
-            from_id = oldest;
-        }
-        Ok((from_id, latest_committed_id))
     }
-}
 
-impl<T> Gemino<T>
-where
-    T: Clone,
-{
     pub fn read_at_least(
         &self,
         num: usize,
