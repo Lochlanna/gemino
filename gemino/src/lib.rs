@@ -657,7 +657,10 @@ impl<T> Sender<T> {
     }
 }
 
-impl<T> Sender<T> where T:Clone {
+impl<T> Sender<T>
+where
+    T: Clone,
+{
     /// Put a new value into the channel. This function will almost never block. The underlying implementation
     /// means that writes have to be finalised in order meaning that if thread a then b writes to the channel.
     /// Thread b will have to wait for thread a to finish as thread a was first to start. Insertion is O(1) and
