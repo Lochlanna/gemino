@@ -11,14 +11,14 @@ mod seq_benchmarks;
 
 #[cfg(test)]
 mod test_helpers {
+    use multiqueue as multiq;
     use std::error::Error;
     use std::sync::Arc;
-    use multiqueue as multiq;
 
     pub trait Sender<T>: Clone {
         type Err: Error;
         fn bench_send(&self, value: T) -> Result<(), Self::Err>;
-        fn another(&self)->Self{
+        fn another(&self) -> Self {
             self.clone()
         }
     }
@@ -26,12 +26,15 @@ mod test_helpers {
     pub trait Receiver<T>: Clone {
         type Err: Error;
         fn bench_recv(&mut self) -> Result<T, Self::Err>;
-        fn another(&self)->Self{
+        fn another(&self) -> Self {
             self.clone()
         }
     }
 
-    impl<T> Sender<T> for gemino::Sender<T> where T: Clone {
+    impl<T> Sender<T> for gemino::Sender<T>
+    where
+        T: Clone,
+    {
         type Err = gemino::Error;
 
         fn bench_send(&self, value: T) -> Result<(), Self::Err> {
@@ -39,7 +42,10 @@ mod test_helpers {
         }
     }
 
-    impl<T> Receiver<T> for gemino::Receiver<T> where T: Clone{
+    impl<T> Receiver<T> for gemino::Receiver<T>
+    where
+        T: Clone,
+    {
         type Err = gemino::Error;
 
         fn bench_recv(&mut self) -> Result<T, Self::Err> {
@@ -47,7 +53,10 @@ mod test_helpers {
         }
     }
 
-    impl<T> Sender<T> for multiq::BroadcastSender<T> where T: Send + Clone {
+    impl<T> Sender<T> for multiq::BroadcastSender<T>
+    where
+        T: Send + Clone,
+    {
         type Err = std::sync::mpsc::TrySendError<T>;
 
         fn bench_send(&self, value: T) -> Result<(), Self::Err> {
@@ -55,7 +64,10 @@ mod test_helpers {
         }
     }
 
-    impl<T> Receiver<T> for multiq::BroadcastReceiver<T> where T: Clone{
+    impl<T> Receiver<T> for multiq::BroadcastReceiver<T>
+    where
+        T: Clone,
+    {
         type Err = std::sync::mpsc::RecvError;
 
         fn bench_recv(&mut self) -> Result<T, Self::Err> {
@@ -65,7 +77,6 @@ mod test_helpers {
             self.add_stream()
         }
     }
-
 
     #[derive(Clone, Eq, PartialEq, Debug)]
     pub struct TestMe {

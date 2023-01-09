@@ -1,11 +1,11 @@
 extern crate test;
 
 use super::*;
+use multiqueue as multiq;
 use std::fmt::Debug;
 use std::thread;
 use std::thread::JoinHandle;
 use test::Bencher;
-use multiqueue as multiq;
 
 fn read_sequential<T: Send + 'static>(
     mut consume: impl Receiver<T> + Send + 'static,
@@ -31,7 +31,7 @@ where
 {
     thread::spawn(move || {
         for item in from {
-            producer.bench_send(item);
+            let _ = producer.bench_send(item);
         }
     })
 }
@@ -47,15 +47,15 @@ fn multithreaded<T, S, R, I>(
     T: Eq + Debug + Clone + Send + 'static,
     S: Sender<T> + Send + 'static,
     R: Receiver<T> + Send + 'static,
-    I: Iterator<Item = T> + Send + Clone + 'static
+    I: Iterator<Item = T> + Send + Clone + 'static,
 {
-    let readers: Vec<JoinHandle<Vec<T>>> = (0..num_reader).map(|_|{
-        read_sequential(r.another(), num_values * num_writers)
-    }).collect();
+    let readers: Vec<JoinHandle<Vec<T>>> = (0..num_reader)
+        .map(|_| read_sequential(r.another(), num_values * num_writers))
+        .collect();
     drop(r);
-    let writers: Vec<JoinHandle<()>> = (0..num_writers).map(|_|{
-        write_all(s.another(), from.clone())
-    }).collect();
+    let writers: Vec<JoinHandle<()>> = (0..num_writers)
+        .map(|_| write_all(s.another(), from.clone()))
+        .collect();
 
     for w in writers {
         let _ = w.join();
@@ -66,7 +66,6 @@ fn multithreaded<T, S, R, I>(
         assert_eq!(res.unwrap().len(), num_values * num_writers);
     }
 }
-
 
 #[bench]
 fn simultanious_gemino_copy(b: &mut Bencher) {
@@ -107,6 +106,8 @@ fn simultanious_gemino_clone(b: &mut Bencher) {
     })
 }
 
+//used for profiling
+#[ignore]
 #[test]
 fn simultanious_gemino_clone_clone() {
     // exact code to benchmark must be passed as a closure to the iter
@@ -115,9 +116,8 @@ fn simultanious_gemino_clone_clone() {
     let num_values = test_data.len();
     let test_input = test_data.into_iter();
     let (producer, consumer) = gemino::channel(10000).expect("couldn't create channel");
-    multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
+    multithreaded(producer, consumer, 4, 4, num_values, test_input);
 }
-
 
 #[bench]
 fn simultanious_multiq_clone(b: &mut Bencher) {
@@ -132,7 +132,8 @@ fn simultanious_multiq_clone(b: &mut Bencher) {
     })
 }
 
-
+//used for profiling
+#[ignore]
 #[test]
 fn simultanious_multiq_clone_test() {
     // exact code to benchmark must be passed as a closure to the iter
@@ -141,5 +142,5 @@ fn simultanious_multiq_clone_test() {
     let num_values = test_data.len();
     let test_input = test_data.into_iter();
     let (producer, consumer) = multiq::broadcast_queue(5000);
-    multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
+    multithreaded(producer, consumer, 4, 4, num_values, test_input);
 }

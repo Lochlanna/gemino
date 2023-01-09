@@ -1,7 +1,7 @@
+use parking_lot::RwLockWriteGuard;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLockWriteGuard;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -140,21 +140,27 @@ impl<T> Gemino<T> {
         // Notify will cause all waiting/blocking threads to wake up and cancel
         self.event.notify(usize::MAX);
     }
-
 }
 
-impl<T> PrivChannel for Gemino<T> where T: Clone {
+impl<T> PrivChannel for Gemino<T>
+where
+    T: Clone,
+{
     #[inline(always)]
     default fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>> {
         unsafe {
-            return Some(self.cell_locks.get_unchecked(index as usize).write());
+            return Some(self.cell_locks.get_unchecked(index).write());
         }
     }
 }
 
-impl<T> PrivChannel for Gemino<T> where T: Copy {
+impl<T> PrivChannel for Gemino<T>
+where
+    T: Copy,
+{
     #[inline(always)]
-    fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>> {
+    fn write_lock(&self, _: usize) -> Option<RwLockWriteGuard<()>> {
+        // No need to take out a lock for copy types!
         None
     }
 }
@@ -392,7 +398,7 @@ where
         //allocate old value here so that we don't run the drop function while we have any locks
         let mut _old_value: T;
         {
-            let _write_lock= self.write_lock(index as usize);
+            let _write_lock = self.write_lock(index as usize);
 
             if id < self.capacity {
                 unsafe {
