@@ -31,7 +31,7 @@ mod test_helpers {
         }
     }
 
-    impl<T> Sender<T> for gemino::Sender<T> {
+    impl<T> Sender<T> for gemino::Sender<T> where T: Clone {
         type Err = gemino::Error;
 
         fn bench_send(&self, value: T) -> Result<(), Self::Err> {
