@@ -1,135 +1,52 @@
 extern crate test;
 
 use super::*;
-use crossbeam_channel::{bounded, unbounded};
-use kanal::bounded as kanal_bounded;
-use std::sync::mpsc::channel;
+use multiqueue as multiq;
+use std::fmt::Debug;
 use test::Bencher;
 
-#[bench]
-fn sequential_gemino(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
-    b.iter(|| {
-        let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
-        for i in 0..1000 {
-            producer.send(i).expect("failed to send");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, i);
-        }
-    })
-}
-
-#[bench]
-fn sequential_gemino_struct(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
-    let test_data = gen_test_structs(1000);
-    b.iter(|| {
-        let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
-        for i in &test_data {
-            producer.send(i.clone()).expect("failed to send");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, *i);
-        }
-    })
-}
-
-#[test]
-fn sequential_gemino_struct_test() {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
-    let test_data = gen_test_structs(10000);
-    for _ in 0..100 {
-        let (producer, mut consumer) = gemino::channel(100).expect("couldn't create channel");
-        for i in &test_data {
-            producer.send(i.clone()).expect("failed to send");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, *i);
-        }
+fn sequential<T, I>(s: impl Sender<T>, mut r: impl Receiver<T>, input: I)
+where
+    I: Iterator<Item = T>,
+    T: Eq + Debug + Clone + Send,
+{
+    for i in input {
+        s.bench_send(i.clone()).expect("failed to send");
+        let v = r.bench_recv().expect("couldn't get value");
+        assert_eq!(v, i);
     }
 }
 
 #[bench]
-fn sequential_std_mpsc(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
+fn sequential_gemino_copy(b: &mut Bencher) {
     b.iter(|| {
-        let (producer, consumer) = channel();
-        for i in 0..1000 {
-            producer.send(i).expect("couldn't send value");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, i);
-        }
+        let (producer, consumer) = gemino::channel(100).expect("couldn't create channel");
+        sequential(producer, consumer, 0..1000);
     })
 }
 
 #[bench]
-fn sequential_crossbeam_bounded(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
+fn sequential_gemino_clone(b: &mut Bencher) {
+    let test_data = gen_test_structs(1000).into_iter();
     b.iter(|| {
-        let (producer, consumer) = bounded(100);
-        for i in 0..1000 {
-            producer.send(i).expect("couldn't send value");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, i);
-        }
+        let (producer, consumer) = gemino::channel(100).expect("couldn't create channel");
+        sequential(producer, consumer, test_data.clone());
     })
 }
 
 #[bench]
-fn sequential_crossbeam_bounded_struct(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
-    let test_data = gen_test_structs(1000);
+fn sequential_multiqueue_copy(b: &mut Bencher) {
     b.iter(|| {
-        let (producer, consumer) = bounded(100);
-        for i in &test_data {
-            producer.send(i.clone()).expect("couldn't send value");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, *i);
-        }
-    })
-}
-
-#[test]
-fn sequential_crossbeam_bounded_struct_test() {
-    let test_data = gen_test_structs(10000);
-    for _ in 0..100 {
-        let (producer, consumer) = bounded(100);
-        for i in &test_data {
-            producer.send(i.clone()).expect("failed to send");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, *i);
-        }
-    }
-}
-
-#[bench]
-fn sequential_crossbeam_unbounded(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
-    b.iter(|| {
-        let (producer, consumer) = unbounded();
-        for i in 0..1000 {
-            producer.send(i).expect("couldn't send value");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, i);
-        }
+        let (producer, consumer) = multiq::broadcast_queue(100);
+        sequential(producer, consumer, 0..1000);
     })
 }
 
 #[bench]
-fn sequential_kanal(b: &mut Bencher) {
-    // exact code to benchmark must be passed as a closure to the iter
-    // method of Bencher
+fn sequential_multiqueue_clone(b: &mut Bencher) {
+    let test_data = gen_test_structs(1000).into_iter();
     b.iter(|| {
-        let (producer, consumer) = kanal_bounded(100);
-        for i in 0..1000 {
-            producer.send(i).expect("couldn't send value");
-            let v = consumer.recv().expect("couldn't get value");
-            assert_eq!(v, i);
-        }
+        let (producer, consumer) = multiq::broadcast_queue(100);
+        sequential(producer, consumer, test_data.clone());
     })
 }

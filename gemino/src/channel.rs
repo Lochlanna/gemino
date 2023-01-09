@@ -1,3 +1,4 @@
+use parking_lot::RwLockWriteGuard;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
@@ -44,6 +45,10 @@ pub trait Channel<T> {
         from_id: usize,
         into: &mut Vec<T>,
     ) -> Result<(isize, isize), ChannelError>;
+}
+
+trait PrivChannel {
+    fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>>;
 }
 
 unsafe impl<T> Sync for Gemino<T> {}
@@ -135,47 +140,28 @@ impl<T> Gemino<T> {
         // Notify will cause all waiting/blocking threads to wake up and cancel
         self.event.notify(usize::MAX);
     }
+}
 
-    pub fn send(&self, val: T) -> Result<isize, ChannelError> {
-        if self.closed.load(Ordering::Relaxed) {
-            return Err(ChannelError::Closed);
-        }
-
-        let id = self.write_head.fetch_add(1, Ordering::Release);
-        let index = id % self.capacity;
-
-        let pos;
+impl<T> PrivChannel for Gemino<T>
+where
+    T: Clone,
+{
+    #[inline(always)]
+    default fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>> {
         unsafe {
-            pos = (*self.inner).get_unchecked_mut(index as usize);
+            return Some(self.cell_locks.get_unchecked(index).write());
         }
+    }
+}
 
-        //allocate old value here so that we don't run the drop function while we have any locks
-        let mut _old_value: T;
-        {
-            let _write_lock;
-
-            unsafe {
-                _write_lock = self.cell_locks.get_unchecked(index as usize).write();
-            }
-
-            if id < self.capacity {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(&val, pos, 1);
-                }
-                // val is now corrupted so forget it and don't run drop
-                std::mem::forget(val);
-            } else {
-                _old_value = std::mem::replace(pos, val);
-            }
-        }
-        //spin waiting for previous producer threads to catch up
-        while self
-            .read_head
-            .compare_exchange_weak(id - 1, id, Ordering::Release, Ordering::Acquire)
-            .is_err()
-        {}
-        self.event.notify(usize::MAX);
-        Ok(id)
+impl<T> PrivChannel for Gemino<T>
+where
+    T: Copy,
+{
+    #[inline(always)]
+    fn write_lock(&self, _: usize) -> Option<RwLockWriteGuard<()>> {
+        // No need to take out a lock for copy types!
+        None
     }
 }
 
@@ -396,6 +382,44 @@ impl<T> Gemino<T>
 where
     T: Clone,
 {
+    pub fn send(&self, val: T) -> Result<isize, ChannelError> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(ChannelError::Closed);
+        }
+
+        let id = self.write_head.fetch_add(1, Ordering::Release);
+        let index = id % self.capacity;
+
+        let pos;
+        unsafe {
+            pos = (*self.inner).get_unchecked_mut(index as usize);
+        }
+
+        //allocate old value here so that we don't run the drop function while we have any locks
+        let mut _old_value: T;
+        {
+            let _write_lock = self.write_lock(index as usize);
+
+            if id < self.capacity {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(&val, pos, 1);
+                }
+                // val is now corrupted so forget it and don't run drop
+                std::mem::forget(val);
+            } else {
+                _old_value = std::mem::replace(pos, val);
+            }
+        }
+        //spin waiting for previous producer threads to catch up
+        while self
+            .read_head
+            .compare_exchange_weak(id - 1, id, Ordering::Release, Ordering::Acquire)
+            .is_err()
+        {}
+        self.event.notify(usize::MAX);
+        Ok(id)
+    }
+
     fn batch(&self, into: &mut Vec<T>, start_idx: usize, end_idx: usize) {
         if end_idx > start_idx {
             let num_elements = end_idx - start_idx;
