@@ -1,203 +1,145 @@
 extern crate test;
-use crossbeam_channel::{bounded, unbounded};
-use gemino::Receiver;
-use gemino::Sender;
-use kanal::bounded as kanal_bounded;
-use std::sync::mpsc::channel;
+
+use super::*;
+use std::fmt::Debug;
 use std::thread;
 use std::thread::JoinHandle;
 use test::Bencher;
+use multiqueue as multiq;
 
-trait BenchReceiver {
-    type Item: Copy + 'static + Send;
-    fn bench_recv(&mut self) -> Self::Item;
-}
-
-trait BenchSender {
-    type Item: Copy + 'static + Send;
-    fn bench_send(&self, v: Self::Item);
-}
-
-impl<T> BenchReceiver for Receiver<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_recv(&mut self) -> Self::Item {
-        self.recv().expect("couldn't get value from gemino")
-    }
-}
-
-impl<T> BenchSender for Sender<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_send(&self, v: Self::Item) {
-        self.send(v).expect("failed to send");
-    }
-}
-
-impl<T> BenchReceiver for kanal::Receiver<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_recv(&mut self) -> Self::Item {
-        self.recv().expect("couldn't get value from kanal")
-    }
-}
-
-impl<T> BenchSender for kanal::Sender<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_send(&self, v: Self::Item) {
-        self.send(v).expect("couldn't send value");
-    }
-}
-
-impl<T> BenchReceiver for std::sync::mpsc::Receiver<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_recv(&mut self) -> Self::Item {
-        self.recv().expect("couldn't get value from kanal")
-    }
-}
-
-impl<T> BenchSender for std::sync::mpsc::Sender<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_send(&self, v: Self::Item) {
-        self.send(v).expect("couldn't send value");
-    }
-}
-
-impl<T> BenchReceiver for crossbeam_channel::Receiver<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_recv(&mut self) -> Self::Item {
-        self.recv().expect("couldn't get value from kanal")
-    }
-}
-
-impl<T> BenchSender for crossbeam_channel::Sender<T>
-where
-    T: Copy + 'static + Send,
-{
-    type Item = T;
-
-    fn bench_send(&self, v: Self::Item) {
-        self.send(v).expect("couldn't send value");
-    }
-}
-
-fn read_sequential<R: BenchReceiver + 'static + Send>(
-    mut consume: R,
+fn read_sequential<T: Send + 'static>(
+    mut consume: impl Receiver<T> + Send + 'static,
     until: usize,
-) -> JoinHandle<Vec<R::Item>> {
+) -> JoinHandle<Vec<T>> {
     thread::spawn(move || {
         let mut results = Vec::with_capacity(until);
         let mut next = 0;
 
-        while next <= until {
+        while next < until {
             let v = consume.bench_recv();
-            results.push(v);
+            results.push(v.unwrap());
             next += 1;
         }
         results
     })
 }
 
-fn write_all<S: BenchSender + 'static + Send>(produce: S, from: &Vec<S::Item>) -> JoinHandle<()> {
-    let from = from.clone();
+fn write_all<T, I>(producer: impl Sender<T> + Send + 'static, from: I) -> JoinHandle<()>
+where
+    I: Iterator<Item = T> + Send + 'static,
+    T: Eq + Debug + Clone,
+{
     thread::spawn(move || {
         for item in from {
-            produce.bench_send(item);
+            producer.bench_send(item);
         }
     })
 }
 
+fn multithreaded<T, S, R, I>(
+    s: S,
+    r: R,
+    num_writers: usize,
+    num_reader: usize,
+    num_values: usize,
+    from: I,
+) where
+    T: Eq + Debug + Clone + Send + 'static,
+    S: Sender<T> + Send + 'static,
+    R: Receiver<T> + Send + 'static,
+    I: Iterator<Item = T> + Send + Clone + 'static
+{
+    let readers: Vec<JoinHandle<Vec<T>>> = (0..num_reader).map(|_|{
+        read_sequential(r.another(), num_values * num_writers)
+    }).collect();
+    drop(r);
+    let writers: Vec<JoinHandle<()>> = (0..num_writers).map(|_|{
+        write_all(s.another(), from.clone())
+    }).collect();
+
+    for w in writers {
+        let _ = w.join();
+    }
+    for r in readers {
+        let res = r.join();
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().len(), num_values * num_writers);
+    }
+}
+
+
 #[bench]
-fn simultanious_gemino(b: &mut Bencher) {
+fn simultanious_gemino_copy(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
-    let test_input: Vec<u32> = (0..1000).collect();
+    let test_data: Vec<i32> = (0..1000).collect();
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
     b.iter(|| {
-        let (producer, consumer) = gemino::channel(1024).expect("couldn't create channel");
-        let reader = read_sequential(consumer, test_input.len() - 1);
-        let writer = write_all(producer, &test_input);
-        writer.join().expect("couldn't join writer");
-        reader.join().expect("couldn't get reader results");
+        let (producer, consumer) = gemino::channel(5000).expect("couldn't create channel");
+        multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
     })
 }
 
 #[bench]
-fn simultanious_std_mpsc(b: &mut Bencher) {
+fn simultanious_multiq_copy(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
-    let test_input: Vec<u32> = (0..1000).collect();
+    let test_data: Vec<i32> = (0..1000).collect();
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
     b.iter(|| {
-        let (producer, consumer) = channel();
-        let reader = read_sequential(consumer, test_input.len() - 1);
-        let writer = write_all(producer, &test_input);
-        writer.join().expect("couldn't join writer");
-        reader.join().expect("couldn't get reader results");
+        let (producer, consumer) = multiq::broadcast_queue(5000);
+        multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
     })
 }
 
 #[bench]
-fn simultanious_crossbeam_bounded(b: &mut Bencher) {
+fn simultanious_gemino_clone(b: &mut Bencher) {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
-    let test_input: Vec<u32> = (0..1000).collect();
+    let test_data = gen_test_structs(1000);
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
     b.iter(|| {
-        let (producer, consumer) = bounded(100);
-        let reader = read_sequential(consumer, test_input.len() - 1);
-        let writer = write_all(producer, &test_input);
-        writer.join().expect("couldn't join writer");
-        reader.join().expect("couldn't get reader results");
+        let (producer, consumer) = gemino::channel(5000).expect("couldn't create channel");
+        multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
     })
 }
 
-#[bench]
-fn simultanious_crossbeam_unbounded(b: &mut Bencher) {
+#[test]
+fn simultanious_gemino_clone_clone() {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
-    let test_input: Vec<u32> = (0..1000).collect();
+    let test_data = gen_test_structs(2000);
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
+    let (producer, consumer) = gemino::channel(10000).expect("couldn't create channel");
+    multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
+}
+
+
+#[bench]
+fn simultanious_multiq_clone(b: &mut Bencher) {
+    // exact code to benchmark must be passed as a closure to the iter
+    // method of Bencher
+    let test_data = gen_test_structs(1000);
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
     b.iter(|| {
-        let (producer, consumer) = unbounded();
-        let reader = read_sequential(consumer, test_input.len() - 1);
-        let writer = write_all(producer, &test_input);
-        writer.join().expect("couldn't join writer");
-        reader.join().expect("couldn't get reader results");
+        let (producer, consumer) = multiq::broadcast_queue(5000);
+        multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
     })
 }
 
-#[bench]
-fn simultanious_kanal(b: &mut Bencher) {
+
+#[test]
+fn simultanious_multiq_clone_test() {
     // exact code to benchmark must be passed as a closure to the iter
     // method of Bencher
-    let test_input: Vec<u32> = (0..1000).collect();
-    b.iter(|| {
-        let (producer, consumer) = kanal_bounded(100);
-        let reader = read_sequential(consumer, test_input.len() - 1);
-        let writer = write_all(producer, &test_input);
-        writer.join().expect("couldn't join writer");
-        reader.join().expect("couldn't get reader results");
-    })
+    let test_data = gen_test_structs(1000);
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
+    let (producer, consumer) = multiq::broadcast_queue(5000);
+    multithreaded(producer, consumer, 4, 4, num_values, test_input.clone());
 }
