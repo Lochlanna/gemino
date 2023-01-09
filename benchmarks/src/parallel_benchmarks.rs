@@ -24,10 +24,11 @@ fn read_sequential<T: Send + 'static>(
     })
 }
 
-fn write_all<T, I>(producer: impl Sender<T> + Send + 'static, from: I) -> JoinHandle<()>
+fn write_all<P, T, I>(producer: P, from: I) -> JoinHandle<()>
 where
+    P: Sender<T> + Send + 'static,
     I: Iterator<Item = T> + Send + 'static,
-    T: Eq + Debug + Clone,
+    T: Eq + Debug + Clone + Send,
 {
     thread::spawn(move || {
         for item in from {

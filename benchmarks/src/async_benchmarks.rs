@@ -1,5 +1,7 @@
 use super::*;
+use std::fmt::Debug;
 use std::future::Future;
+use tokio::task::JoinHandle;
 
 async fn measure<FUT>(name: &str, runs: u32, f: impl Fn() -> FUT)
 where
@@ -33,296 +35,112 @@ where
     );
 }
 
-#[tokio::test]
-async fn tokio_broadcast() {
-    measure("tokio::broadcast", 5, async || {
-        let num_to_write = 1000;
+fn read_sequential<T: Send + 'static, R: Receiver<T> + Send + 'static>(
+    mut consume: R,
+    until: usize,
+) -> JoinHandle<Vec<T>> {
+    tokio::task::spawn(async move {
+        let mut results = Vec::with_capacity(until);
+        let mut next = 0;
 
-        let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
-        let writer = tokio::spawn(async move {
-            for i in 0..num_to_write {
-                tx.send(i).expect("couldn't send value");
-            }
-        });
-        let reader = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx
-                    .recv()
-                    .await
-                    .expect("got an error from tokio broadcast recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results) = tokio::join!(writer, reader);
-        assert!(results.is_ok());
-        let results = results.unwrap();
-        assert_eq!(results.len(), num_to_write);
+        while next < until {
+            let v = consume.async_bench_recv().await;
+            results.push(v);
+            next += 1;
+        }
+        results
+    })
+}
+
+fn write_all<T, I, S>(producer: S, from: I) -> JoinHandle<()>
+where
+    I: Iterator<Item = T> + Send + 'static,
+    T: Eq + Debug + Clone + Send,
+    S: Sender<T> + Send + 'static + Sync,
+{
+    tokio::task::spawn(async move {
+        for item in from {
+            let _ = producer.bench_send(item);
+        }
+    })
+}
+
+async fn async_multithreaded<T, S, R, I>(
+    s: S,
+    r: R,
+    num_writers: usize,
+    num_reader: usize,
+    num_values: usize,
+    from: I,
+) where
+    T: Eq + Debug + Clone + Send + 'static,
+    S: Sender<T> + Send + 'static + Sync,
+    R: Receiver<T> + Send + 'static,
+    I: Iterator<Item = T> + Send + Clone + 'static,
+{
+    let readers: Vec<JoinHandle<Vec<T>>> = (0..num_reader)
+        .map(|_| read_sequential(r.another(), num_values * num_writers))
+        .collect();
+    drop(r);
+
+    let writers: Vec<JoinHandle<()>> = (0..num_writers)
+        .map(|_| write_all(s.another(), from.clone()))
+        .collect();
+
+    for w in writers {
+        let _ = w.await;
+    }
+    for r in readers {
+        let res = r.await;
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().len(), num_values * num_writers);
+    }
+}
+
+#[tokio::test]
+async fn tokio_broadcast_copy() {
+    let test_data: Vec<i32> = (0..1000).collect();
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
+    measure("tokio::broadcast", 25, async || {
+        let (producer, consumer) = tokio::sync::broadcast::channel(5000);
+        async_multithreaded(producer, consumer, 4, 4, num_values, test_input.clone()).await
     })
     .await;
 }
 
 #[tokio::test]
-async fn tokio_broadcast_struct() {
-    let num_to_write = 1000;
-    measure("tokio::broadcast - struct", 5, async || {
-        let test_data = gen_test_structs(num_to_write);
-        let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
-        let writer = tokio::spawn(async move {
-            for i in test_data {
-                tx.send(i).expect("couldn't send value");
-            }
-        });
-        let reader = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx
-                    .recv()
-                    .await
-                    .expect("got an error from tokio broadcast recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results) = tokio::join!(writer, reader);
-        assert!(results.is_ok());
-        let results = results.unwrap();
-        assert_eq!(results.len(), num_to_write);
+async fn tokio_broadcast_clone() {
+    let test_data = gen_test_structs(1000);
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
+    measure("tokio::broadcast - struct", 25, async || {
+        let (producer, consumer) = tokio::sync::broadcast::channel(5000);
+        async_multithreaded(producer, consumer, 4, 4, num_values, test_input.clone()).await
     })
     .await;
 }
 
 #[tokio::test]
-async fn gemino() {
-    measure("gemino::Broadcast", 5, async || {
-        let num_to_write = 1000;
-
-        let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
-        let writer = tokio::spawn(async move {
-            for i in 0..num_to_write {
-                tx.send(i).expect("failed to send");
-            }
-        });
-        let reader = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx
-                    .recv_async()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results) = tokio::join!(writer, reader);
-        assert!(results.is_ok());
-        let results = results.unwrap();
-        assert_eq!(results.len(), num_to_write);
+async fn gemino_copy() {
+    let test_data: Vec<i32> = (0..1000).collect();
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
+    measure("gemino::Broadcast", 25, async || {
+        let (producer, consumer) = gemino::channel(5000).expect("couldn't create channel");
+        async_multithreaded(producer, consumer, 4, 4, num_values, test_input.clone()).await
     })
     .await;
 }
 
 #[tokio::test]
-async fn gemino_struct() {
-    let num_to_write = 1000;
-    measure("gemino::broadcast - struct", 5, async || {
-        let test_data = gen_test_structs(num_to_write);
-        let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
-        let writer = tokio::spawn(async move {
-            for i in test_data {
-                tx.send(i).expect("couldn't send value");
-            }
-        });
-        let reader = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx
-                    .recv_async()
-                    .await
-                    .expect("got an error from tokio broadcast recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results) = tokio::join!(writer, reader);
-        assert!(results.is_ok());
-        let results = results.unwrap();
-        assert_eq!(results.len(), num_to_write);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn tokio_broadcast_multi_reader() {
-    measure("tokio::Broadcast - multi reader", 5, async || {
-        let num_to_write = 1000;
-
-        let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
-        let mut rx_clone = tx.subscribe();
-        let writer = tokio::spawn(async move {
-            for i in 0..num_to_write {
-                tx.send(i).expect("couldn't send value");
-            }
-        });
-        let reader_a = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx.recv().await.expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let reader_b = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx_clone
-                    .recv()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results_a, results_b) = tokio::join!(writer, reader_a, reader_b);
-        assert!(results_a.is_ok());
-        assert!(results_b.is_ok());
-        let results_a = results_a.unwrap();
-        let results_b = results_b.unwrap();
-        assert_eq!(results_a.len(), num_to_write);
-        assert_eq!(results_b.len(), num_to_write);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn tokio_broadcast_multi_reader_struct() {
-    let num_to_write = 1000;
-    measure("tokio::Broadcast - multi reader - struct", 5, async || {
-        let test_data = gen_test_structs(num_to_write);
-        let (tx, mut rx) = tokio::sync::broadcast::channel(num_to_write + 10);
-        let mut rx_clone = tx.subscribe();
-        let writer = tokio::spawn(async move {
-            for i in test_data {
-                tx.send(i).expect("couldn't send value");
-            }
-        });
-        let reader_a = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx.recv().await.expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let reader_b = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx_clone
-                    .recv()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results_a, results_b) = tokio::join!(writer, reader_a, reader_b);
-        assert!(results_a.is_ok());
-        assert!(results_b.is_ok());
-        let results_a = results_a.unwrap();
-        let results_b = results_b.unwrap();
-        assert_eq!(results_a.len(), num_to_write);
-        assert_eq!(results_b.len(), num_to_write);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn gemino_multi_reader() {
-    measure("gemino::Broadcast - multi reader", 5, async || {
-        let num_to_write = 1000;
-
-        let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
-        let mut rx_clone = rx.clone();
-        let writer = tokio::spawn(async move {
-            for i in 0..num_to_write {
-                tx.send(i).expect("failed to send");
-            }
-        });
-        let reader_a = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx
-                    .recv_async()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let reader_b = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx_clone
-                    .recv_async()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results_a, results_b) = tokio::join!(writer, reader_a, reader_b);
-        assert!(results_a.is_ok());
-        assert!(results_b.is_ok());
-        let results_a = results_a.unwrap();
-        let results_b = results_b.unwrap();
-        assert_eq!(results_a.len(), num_to_write);
-        assert_eq!(results_b.len(), num_to_write);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn gemino_multi_reader_struct() {
-    let num_to_write = 1000;
-    measure("gemino::Broadcast - multi reader - struct", 5, async || {
-        let test_data = gen_test_structs(num_to_write);
-        let (tx, mut rx) = gemino::channel(num_to_write + 10).expect("couldn't create channel");
-        let mut rx_clone = rx.clone();
-        let writer = tokio::spawn(async move {
-            for i in 0..num_to_write {
-                tx.send(i).expect("failed to send");
-            }
-        });
-        let reader_a = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in test_data {
-                let value = rx
-                    .recv_async()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let reader_b = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(num_to_write);
-            for _ in 0..num_to_write {
-                let value = rx_clone
-                    .recv_async()
-                    .await
-                    .expect("got an error from gemino recv");
-                results.push(value);
-            }
-            results
-        });
-        let (_, results_a, results_b) = tokio::join!(writer, reader_a, reader_b);
-        assert!(results_a.is_ok());
-        assert!(results_b.is_ok());
-        let results_a = results_a.unwrap();
-        let results_b = results_b.unwrap();
-        assert_eq!(results_a.len(), num_to_write);
-        assert_eq!(results_b.len(), num_to_write);
+async fn gemino_clone() {
+    let test_data = gen_test_structs(1000);
+    let num_values = test_data.len();
+    let test_input = test_data.into_iter();
+    measure("gemino::broadcast - struct", 25, async || {
+        let (producer, consumer) = gemino::channel(5000).expect("couldn't create channel");
+        async_multithreaded(producer, consumer, 4, 4, num_values, test_input.clone()).await
     })
     .await;
 }

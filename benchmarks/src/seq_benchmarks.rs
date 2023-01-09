@@ -8,7 +8,7 @@ use test::Bencher;
 fn sequential<T, I>(s: impl Sender<T>, mut r: impl Receiver<T>, input: I)
 where
     I: Iterator<Item = T>,
-    T: Eq + Debug + Clone,
+    T: Eq + Debug + Clone + Send,
 {
     for i in input {
         s.bench_send(i.clone()).expect("failed to send");

@@ -11,6 +11,7 @@ gemino = {path= "../gemino" }
 tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
 log = "0.4"
+async-trait = "0.1.61"
 #bus = "2.3.0"
 #broadcaster = "1.0.0"
 multiqueue = "0.3.2"
