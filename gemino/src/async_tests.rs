@@ -63,39 +63,3 @@ async fn close() {
     assert!(fail.is_err());
     assert!(matches!(fail.err().unwrap(), Error::Closed));
 }
-
-#[tokio::test]
-async fn recv_at_least() {
-    let (tx, mut rx) = channel(3).expect("couldn't create channel");
-    tx.send(42).expect("couldnt' send message");
-    tx.send(12).expect("couldnt' send message");
-    let mut results = Vec::new();
-    let fail = tokio::time::timeout(
-        Duration::from_millis(5),
-        rx.recv_at_least_async(3, &mut results),
-    )
-    .await;
-    assert!(fail.is_err()); // timeout because it was waiting for 3 elements on the array
-    tx.send(21).expect("couldnt' send message");
-    let v = rx
-        .recv_at_least_async(3, &mut results)
-        .await
-        .expect("failed to get messages");
-    assert_eq!(v, 0);
-    assert_eq!(vec![42, 12, 21], results);
-}
-
-#[tokio::test]
-async fn recv_at_least_behind() {
-    let (tx, mut rx) = channel(2).expect("couldn't create channel");
-    tx.send(42).expect("couldnt' send message");
-    tx.send(12).expect("couldnt' send message");
-    tx.send(21).expect("couldnt' send message");
-    let mut results = Vec::new();
-    let v = rx
-        .recv_at_least_async(2, &mut results)
-        .await
-        .expect("failed to get messages");
-    assert_eq!(v, 1);
-    assert_eq!(vec![12, 21], results);
-}

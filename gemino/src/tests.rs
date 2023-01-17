@@ -4,9 +4,9 @@ use chrono::Duration;
 use std::ops::{Add, Div};
 use std::thread::JoinHandle;
 use std::time::Instant;
-use std::{thread, time};
+use std::thread;
 
-fn read_sequential<T: Copy + 'static + Sync + Send>(
+fn read_sequential<T: Clone + 'static + Sync + Send>(
     mut consume: Receiver<T>,
     starting_at: usize,
     until: usize,
@@ -34,7 +34,7 @@ fn read_sequential<T: Copy + 'static + Sync + Send>(
     })
 }
 
-fn write_all<T: Copy + 'static + Sync + Send + Send>(
+fn write_all<T: Clone + 'static + Sync + Send + Send>(
     produce: Sender<T>,
     from: &Vec<T>,
     at_rate_of: i32,
@@ -95,6 +95,20 @@ fn simultaneous_read_write_with_overwrite() {
 }
 
 #[test]
+fn simultaneous_read_write_with_overwrite_2() {
+    let test_input: Vec<String> = (0..1000).map(|v|{
+        format!("{v}")
+    }).collect();
+    let (producer, consumer) = crate::channel(1024).expect("couldn't create channel");
+    let reader = read_sequential(consumer, 0, test_input.len() - 1, Duration::zero());
+    thread::sleep(core::time::Duration::from_secs_f64(0.1));
+    let writer = write_all(producer, &test_input, 0, Duration::milliseconds(0));
+    writer.join().expect("join of writer failed");
+    let result = reader.join().expect("join of reader failed");
+    assert_eq!(result, test_input);
+}
+
+#[test]
 fn simultaneous_read_write_multiple_reader() {
     let test_input: Vec<u64> = (0..10).collect();
     let (producer, consumer) = crate::channel(20).expect("couldn't create channel");
@@ -124,31 +138,6 @@ fn try_get_invalid() {
     let err = chan.try_get(usize::MAX);
     assert!(err.is_err());
     assert!(matches!(err.err().unwrap(), ChannelError::InvalidIndex));
-}
-
-#[test]
-fn receive_many() {
-    let (producer, mut consumer) = crate::channel(3).expect("couldn't create channel");
-    for v in 0..10 {
-        producer.send(v).expect("failed to send");
-    }
-    let mut values = Vec::with_capacity(15);
-    let missed = consumer
-        .try_recv_many(&mut values)
-        .expect("couldn't do build read from channel");
-    assert_eq!(missed, 7);
-    assert_eq!(vec![7, 8, 9], values);
-
-    let (producer, mut consumer) = crate::channel(40).expect("couldn't create channel");
-    for v in 0..5 {
-        producer.send(v).expect("failed to send");
-    }
-    let mut values = Vec::with_capacity(15);
-    let missed = consumer
-        .try_recv_many(&mut values)
-        .expect("couldn't do build read from channel");
-    assert_eq!(vec![0, 1, 2, 3, 4], values);
-    assert_eq!(missed, 0);
 }
 
 #[test]
@@ -272,19 +261,6 @@ fn buffer_too_small() {
 }
 
 #[test]
-fn capacity() {
-    let chan = Gemino::<u8>::new(8).expect("couldn't create channel");
-    assert_eq!(chan.capacity(), 8);
-    for i in 0..10 {
-        chan.send(i).expect("failed to send");
-    }
-    let mut results = Vec::new();
-    chan.read_batch_from(0, &mut results)
-        .expect("couldn't perform bulk read");
-    assert_eq!(results.len(), 8);
-}
-
-#[test]
 fn close() {
     let (tx, mut rx) = crate::channel::<u8>(3).expect("couldn't create channel");
     tx.send(42).expect("failed to send message");
@@ -318,63 +294,6 @@ fn latest_after_closed() {
     assert!(matches!(fail.err().unwrap(), Error::Closed));
     assert!(tx.is_closed());
     assert!(rx.is_closed());
-}
-
-#[test]
-fn recv_at_least() {
-    let (tx, mut rx) = channel(3).expect("couldn't create channel");
-    tx.send(42).expect("couldnt' send message");
-    tx.send(12).expect("couldnt' send message");
-    thread::spawn(move || {
-        thread::sleep(time::Duration::from_millis(10));
-        tx.send(21).expect("couldnt' send message");
-    });
-    let mut results = Vec::new();
-    let v = rx
-        .recv_at_least(3, &mut results)
-        .expect("failed to get messages");
-    assert_eq!(v, 0);
-    assert_eq!(vec![42, 12, 21], results);
-}
-
-#[test]
-fn recv_at_least_behind() {
-    let (tx, mut rx) = channel(2).expect("couldn't create channel");
-    tx.send(42).expect("couldnt' send message");
-    tx.send(12).expect("couldnt' send message");
-    tx.send(21).expect("couldnt' send message");
-    let mut results = Vec::new();
-    let v = rx
-        .recv_at_least(2, &mut results)
-        .expect("failed to get messages");
-    assert_eq!(v, 1);
-    assert_eq!(vec![12, 21], results);
-}
-
-#[test]
-fn single_value_batch() {
-    let (tx, mut rx) = channel(2).expect("couldn't create channel");
-    tx.send(42).expect("couldnt' send message");
-    let mut results = Vec::new();
-    let v = rx
-        .try_recv_many(&mut results)
-        .expect("failed to get messages");
-    assert_eq!(v, 0);
-    assert_eq!(vec![42], results);
-}
-
-#[test]
-fn entire_buffer_batch() {
-    let (tx, mut rx) = channel(3).expect("couldn't create channel");
-    tx.send(42).expect("couldnt' send message");
-    tx.send(21).expect("couldnt' send message");
-    tx.send(12).expect("couldnt' send message");
-    let mut results = Vec::new();
-    let v = rx
-        .try_recv_many(&mut results)
-        .expect("failed to get messages");
-    assert_eq!(v, 0);
-    assert_eq!(vec![42, 21, 12], results);
 }
 
 #[test]

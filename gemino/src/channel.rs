@@ -1,5 +1,5 @@
-use parking_lot::RwLockWriteGuard;
 use std::fmt::Debug;
+use std::mem::forget;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -34,21 +34,16 @@ pub(crate) struct Gemino<T> {
     capacity: isize,
     event: event_listener::Event,
     closed: AtomicBool,
-    cell_locks: Vec<parking_lot::RwLock<()>>,
+    cell_ownership: Vec<AtomicIsize>,
 }
 
 pub trait Channel<T> {
     fn try_get(&self, id: usize) -> Result<T, ChannelError>;
     fn get_latest(&self) -> Result<(T, isize), ChannelError>;
-    fn read_batch_from(
-        &self,
-        from_id: usize,
-        into: &mut Vec<T>,
-    ) -> Result<(isize, isize), ChannelError>;
 }
 
-trait PrivChannel {
-    fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>>;
+trait PrivateChannel {
+    fn should_drop(&self, index: usize) -> bool;
 }
 
 unsafe impl<T> Sync for Gemino<T> {}
@@ -89,11 +84,11 @@ impl<T> Gemino<T> {
         }
         let inner = Box::into_raw(inner);
 
-        let mut cell_locks;
+        let mut cell_ownership;
 
         {
-            cell_locks = Vec::new();
-            cell_locks.resize_with(buffer_size, Default::default);
+            cell_ownership = Vec::new();
+            cell_ownership.resize_with(buffer_size, Default::default);
         }
 
         Ok(Arc::new(Self {
@@ -103,8 +98,7 @@ impl<T> Gemino<T> {
             capacity: buffer_size as isize,
             event: event_listener::Event::new(),
             closed: AtomicBool::new(false),
-
-            cell_locks,
+            cell_ownership,
         }))
     }
 
@@ -142,26 +136,30 @@ impl<T> Gemino<T> {
     }
 }
 
-impl<T> PrivChannel for Gemino<T>
+impl<T> PrivateChannel for Gemino<T>
 where
     T: Clone,
 {
     #[inline(always)]
-    default fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>> {
+    default fn should_drop(&self, index: usize) -> bool {
         unsafe {
-            return Some(self.cell_locks.get_unchecked(index).write());
+            return self
+                .cell_ownership
+                .get_unchecked(index)
+                .compare_exchange(0, -1, Ordering::Release, Ordering::Relaxed)
+                .is_ok();
         }
     }
 }
 
-impl<T> PrivChannel for Gemino<T>
+impl<T> PrivateChannel for Gemino<T>
 where
     T: Copy,
 {
     #[inline(always)]
-    fn write_lock(&self, _: usize) -> Option<RwLockWriteGuard<()>> {
-        // No need to take out a lock for copy types!
-        None
+    fn should_drop(&self, _: usize) -> bool {
+        // No need for protection with copy types
+        true
     }
 }
 
@@ -169,6 +167,7 @@ impl<T> Channel<T> for Gemino<T>
 where
     T: Clone,
 {
+    #[allow(clippy::uninit_assumed_init)]
     default fn try_get(&self, id: usize) -> Result<T, ChannelError> {
         if id > isize::MAX as usize {
             return Err(ChannelError::InvalidIndex);
@@ -183,17 +182,46 @@ where
             return Err(ChannelError::IDNotYetWritten);
         }
 
-        let _read_lock = self.cell_locks[index as usize].read();
+        let mut copied_data;
+        unsafe {
+            copied_data= core::mem::MaybeUninit::uninit().assume_init();
+        }
 
-        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
-        // Since we have the lock and we know this will not change we might as well early out
-        // as opposed to the way the copy version works which detects a corrupted read
+        unsafe {
+            std::ptr::copy_nonoverlapping(&(*self.inner)[index as usize], &mut copied_data, 1)
+        }
+
         let oldest = self.oldest();
         if id < oldest {
+            forget(copied_data);
             return Err(ChannelError::IdTooOld(oldest));
         }
 
-        unsafe { Ok((*self.inner)[index as usize].clone()) }
+        let mut previous_reader_count;
+        unsafe {
+            previous_reader_count = self.cell_ownership.get_unchecked(index as usize).fetch_add(1, Ordering::Release);
+        }
+        if previous_reader_count == -1 {
+            // The writer will take the count to negative 1 if it thinks it has ownership of the value
+            forget(copied_data);
+            return Err(ChannelError::IdTooOld(oldest));
+        }
+
+        let cloned = copied_data.clone();
+
+        unsafe {
+            previous_reader_count = self.cell_ownership.get_unchecked(index as usize).fetch_sub(1, Ordering::Release);
+        }
+
+        if previous_reader_count == 1 {
+            // we are the last reader to have owned it. Check if it's been overwritten
+            if id < self.oldest() {
+                drop(copied_data);
+                return Ok(cloned);
+            }
+        }
+        forget(copied_data);
+        Ok(cloned)
     }
 
     default fn get_latest(&self) -> Result<(T, isize), ChannelError> {
@@ -203,78 +231,8 @@ where
         if latest_committed_id < 0 {
             return Err(ChannelError::IDNotYetWritten);
         }
-        let index = (latest_committed_id % self.capacity) as usize;
-
-        let _read_lock = self.cell_locks[index].read();
-
-        // We have to do this check after acquiring the lock to make sure it wasn't overwritten
-        // Since we have the lock and we know this will not change we might as well early out
-        // as opposed to the way copy works which detects a corrupted read
-        let oldest = self.oldest();
-        if latest_committed_id < oldest {
-            // The only way that this should be possible is if the buffer is being written to so quickly
-            // that it is completely overwritten before the lock can be taken out
-            // With a very small buffer this might be possible although this check is probably
-            // unnecessarily costly for any buffers that arent' tiny. Safety or Speed?
-            return Err(ChannelError::Overloaded);
-        }
-
-        unsafe { Ok(((*self.inner)[index].clone(), latest_committed_id)) }
-    }
-
-    default fn read_batch_from(
-        &self,
-        from_id: usize,
-        into: &mut Vec<T>,
-    ) -> Result<(isize, isize), ChannelError> {
-        if from_id > isize::MAX as usize {
-            return Err(ChannelError::InvalidIndex);
-        }
-        let mut from_id = from_id as isize;
-
-        let latest_committed_id = self.read_head.load(Ordering::Acquire);
-        if latest_committed_id < from_id {
-            self.closed()?;
-            return Err(ChannelError::IDNotYetWritten);
-        }
-
-        let mut oldest = self.oldest();
-        if from_id < oldest {
-            from_id = oldest
-        }
-
-        let mut start_idx = (from_id % self.capacity) as usize;
-        let end_idx = (latest_committed_id % self.capacity) as usize + 1;
-
-        let mut _read_lock;
-        unsafe {
-            _read_lock = self.cell_locks.get_unchecked(start_idx).read();
-        }
-
-        oldest = self.oldest();
-        while from_id < oldest {
-            // we have to do this to ensure a writer didn't overtake us before we could take out the lock.
-            // inside this loop we play catch up if that happened. This will be expensive!
-            from_id = oldest;
-            start_idx = (from_id % self.capacity) as usize;
-            let new_lock;
-            unsafe {
-                new_lock = self.cell_locks.get_unchecked(start_idx).read();
-            }
-            _read_lock = new_lock;
-            oldest = self.oldest();
-        }
-
-        if from_id > latest_committed_id {
-            // This could happen if we don't catch the writers
-            return Err(ChannelError::Overloaded);
-        }
-
-        // now that we have the lock a writer cannot overtake us so anything up until latest
-        // committed id is safe to read
-        self.batch(into, start_idx, end_idx);
-
-        Ok((from_id, latest_committed_id))
+        let result = self.try_get(latest_committed_id as usize);
+        result.map(|value| (value, latest_committed_id))
     }
 }
 
@@ -337,45 +295,6 @@ where
 
         result
     }
-
-    fn read_batch_from(
-        &self,
-        from_id: usize,
-        into: &mut Vec<T>,
-    ) -> Result<(isize, isize), ChannelError> {
-        if from_id > isize::MAX as usize {
-            return Err(ChannelError::InvalidIndex);
-        }
-        let mut from_id = from_id as isize;
-
-        let latest_committed_id = self.read_head.load(Ordering::Acquire);
-        if latest_committed_id < from_id {
-            self.closed()?;
-            return Err(ChannelError::IDNotYetWritten);
-        }
-
-        let oldest = self.oldest();
-        if from_id < oldest {
-            from_id = oldest
-        }
-
-        let start_idx = (from_id % self.capacity) as usize;
-        let end_idx = (latest_committed_id % self.capacity) as usize + 1;
-
-        self.batch(into, start_idx, end_idx);
-
-        // We need to ensure that no writers were writing to the same cells we were reading. If they
-        // did we invalidate those values.
-        let oldest = self.oldest();
-        if from_id < oldest {
-            // we have to invalidate some number of values as they may have been overwritten during the copy
-            // this is pretty expensive to do but unavoidable unfortunately
-            let num_to_remove = (oldest - from_id) as usize;
-            into.drain(0..num_to_remove);
-            from_id = oldest;
-        }
-        Ok((from_id, latest_committed_id))
-    }
 }
 
 impl<T> Gemino<T>
@@ -396,28 +315,37 @@ where
         }
 
         //allocate old value here so that we don't run the drop function while we have any locks
-        let mut _old_value: T;
         {
-            let _write_lock = self.write_lock(index as usize);
-
             if id < self.capacity {
                 unsafe {
                     std::ptr::copy_nonoverlapping(&val, pos, 1);
                 }
                 // val is now corrupted so forget it and don't run drop
-                std::mem::forget(val);
+                forget(val);
+                //spin waiting for previous producer threads to catch up
+                self.wait_for_previous_writers(id);
             } else {
-                _old_value = std::mem::replace(pos, val);
+                let should_drop = self.should_drop(index as usize);
+                let old_value = std::mem::replace(pos, val);
+                //spin waiting for previous producer threads to catch up
+                self.wait_for_previous_writers(id);
+                if should_drop {
+                    drop(old_value);
+                } else {
+                    forget(old_value);
+                }
             }
         }
-        //spin waiting for previous producer threads to catch up
+        self.event.notify(usize::MAX);
+        Ok(id)
+    }
+
+    fn wait_for_previous_writers(&self, id: isize) {
         while self
             .read_head
             .compare_exchange_weak(id - 1, id, Ordering::Release, Ordering::Acquire)
             .is_err()
         {}
-        self.event.notify(usize::MAX);
-        Ok(id)
     }
 
     fn batch(&self, into: &mut Vec<T>, start_idx: usize, end_idx: usize) {
@@ -445,55 +373,6 @@ where
                 // Clone from slice will use copy from slice if T is Copy
                 into[res_start..(res_start + slice_to_copy.len())].clone_from_slice(slice_to_copy);
             }
-        }
-    }
-
-    pub fn read_at_least(
-        &self,
-        num: usize,
-        mut from_id: usize,
-        into: &mut Vec<T>,
-    ) -> Result<(isize, isize), ChannelError> {
-        if num > self.capacity() {
-            return Err(ChannelError::ReadTooLarge);
-        }
-        let original_from = from_id;
-        loop {
-            let listener = self.event.listen();
-            let oldest = self.oldest();
-            if from_id < oldest as usize {
-                from_id = oldest as usize;
-            }
-            let latest = self.read_head.load(Ordering::Acquire);
-            let num_available = (latest as usize) - from_id + 1;
-            if num_available >= num {
-                return self.read_batch_from(original_from, into);
-            }
-            listener.wait();
-        }
-    }
-
-    pub async fn read_at_least_async(
-        &self,
-        num: usize,
-        mut from_id: usize,
-        into: &mut Vec<T>,
-    ) -> Result<(isize, isize), ChannelError> {
-        if num > self.capacity() {
-            return Err(ChannelError::ReadTooLarge);
-        }
-        loop {
-            let listener = self.event.listen();
-            let oldest = self.oldest();
-            if from_id < oldest as usize {
-                from_id = oldest as usize;
-            }
-            let latest = self.read_head.load(Ordering::Acquire);
-            let num_available = (latest as usize) - from_id + 1;
-            if num_available >= num {
-                return self.read_batch_from(from_id, into);
-            }
-            listener.await;
         }
     }
 
