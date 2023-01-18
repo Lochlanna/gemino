@@ -47,10 +47,6 @@ pub trait Channel<T> {
     ) -> Result<(isize, isize), ChannelError>;
 }
 
-trait PrivChannel {
-    fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>>;
-}
-
 unsafe impl<T> Sync for Gemino<T> {}
 unsafe impl<T> Send for Gemino<T> {}
 
@@ -139,29 +135,6 @@ impl<T> Gemino<T> {
         self.closed.store(true, Ordering::Release);
         // Notify will cause all waiting/blocking threads to wake up and cancel
         self.event.notify(usize::MAX);
-    }
-}
-
-impl<T> PrivChannel for Gemino<T>
-where
-    T: Clone,
-{
-    #[inline(always)]
-    default fn write_lock(&self, index: usize) -> Option<RwLockWriteGuard<()>> {
-        unsafe {
-            return Some(self.cell_locks.get_unchecked(index).write());
-        }
-    }
-}
-
-impl<T> PrivChannel for Gemino<T>
-where
-    T: Copy,
-{
-    #[inline(always)]
-    fn write_lock(&self, _: usize) -> Option<RwLockWriteGuard<()>> {
-        // No need to take out a lock for copy types!
-        None
     }
 }
 
@@ -303,7 +276,7 @@ where
 
         // By checking this after we have read the value we are guaranteeing that the value we read the actual value we wanted
         // and it wasn't overwritten by a reader. If we did this check before hand it would be possible
-        // for a reader to update the value between the check and reading the value from memory
+        // for a writer to update the value between the check and reading the value from memory
         let oldest = self.oldest();
         if id < oldest {
             return Err(ChannelError::IdTooOld(oldest));
@@ -398,7 +371,10 @@ where
         //allocate old value here so that we don't run the drop function while we have any locks
         let mut _old_value: T;
         {
-            let _write_lock = self.write_lock(index as usize);
+            let _write_lock;
+            unsafe {
+                _write_lock = self.cell_locks.get_unchecked(index as usize).write();
+            }
 
             if id < self.capacity {
                 unsafe {
