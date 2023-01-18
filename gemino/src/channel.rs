@@ -1,4 +1,3 @@
-use parking_lot::RwLockWriteGuard;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
